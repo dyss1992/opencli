@@ -29,6 +29,7 @@ type PublishInput = {
 
 type PublishState = {
   url: string;
+  catId: string | null;
   isAiPage: boolean;
   isPublishPage: boolean;
   isSuccessPage: boolean;
@@ -40,6 +41,59 @@ type PublishState = {
   itemId: string | null;
   itemUrl: string | null;
 };
+
+type CategoryProfile = {
+  key: 'plush' | 'figure';
+  label: string;
+  catIds: string[];
+  pathHints: string[];
+  materialSelectors: string[];
+  characterSelectors: string[];
+  workTitleSelectors: string[];
+  regionContainerSelector?: string;
+  ageContainerSelector?: string;
+  defaultAge?: string;
+};
+
+const CATEGORY_PROFILES: CategoryProfile[] = [
+  {
+    key: 'plush',
+    label: '动漫毛绒',
+    catIds: ['122676006'],
+    pathHints: ['动漫毛绒', '毛绒'],
+    materialSelectors: ['input[name="p-20021"]'],
+    characterSelectors: ['input[name="p-587451596"]'],
+    workTitleSelectors: ['#sell-field-p-135924127 input[role="combobox"]'],
+    regionContainerSelector: '#sell-field-p-18821503',
+  },
+  {
+    key: 'figure',
+    label: '手办',
+    catIds: ['50008406'],
+    pathHints: ['手办', '手办景品'],
+    materialSelectors: [],
+    characterSelectors: ['#struct-p-135892197 input[role="combobox"]'],
+    workTitleSelectors: ['#sell-field-p-135924127 input[role="combobox"]'],
+    regionContainerSelector: '#sell-field-p-18821503',
+    ageContainerSelector: '#sell-field-p-20017',
+    defaultAge: '14周岁以上',
+  },
+];
+
+function detectCategoryProfile(state: PublishState): CategoryProfile {
+  const normalizedPath = state.categoryPath ?? '';
+  const profile = CATEGORY_PROFILES.find((candidate) =>
+    (state.catId && candidate.catIds.includes(state.catId)) ||
+    candidate.pathHints.some((hint) => normalizedPath.includes(hint))
+  );
+
+  if (profile) return profile;
+
+  throw new Error(
+    `Unsupported Taobao category for publish automation. ` +
+    `catId=${state.catId ?? 'n/a'}; path=${state.categoryPath ?? 'n/a'}`,
+  );
+}
 
 function inferMerchantCode(inputPath: string): string {
   const base = path.basename(path.resolve(inputPath));
@@ -194,6 +248,15 @@ async function readPublishState(page: IPage): Promise<PublishState> {
 
       return {
         url: currentUrl,
+        catId: (() => {
+          try {
+            const parsed = new URL(currentUrl, location.origin);
+            return parsed.searchParams.get('catId');
+          } catch (error) {
+            const match = currentUrl.match(/[?&]catId=(\\d+)/i);
+            return match ? match[1] : null;
+          }
+        })(),
         isAiPage: /\\/sell\\/ai\\/category\\.htm\\b/i.test(currentUrl),
         isPublishPage: /\\/sell\\/v2\\/publish\\.htm\\b/i.test(currentUrl),
         isSuccessPage: /\\/sell\\/v2\\/success\\.htm\\b/i.test(currentUrl),
@@ -722,6 +785,36 @@ async function setDeliveryDays(page: IPage, days: number): Promise<void> {
   await setTextInput(page, ['#sell-field-tmDeliveryTime input[placeholder*="最长120天"]'], String(days), '发货天数', 'numeric');
 }
 
+async function setCategorySpecificFields(
+  page: IPage,
+  profile: CategoryProfile,
+  input: Pick<PublishInput, 'age' | 'material' | 'character' | 'workTitle' | 'region'>,
+): Promise<void> {
+  if (profile.ageContainerSelector && await waitForVisibleSelector(page, [`${profile.ageContainerSelector} input[role="combobox"]`], 1.5)) {
+    const ageValue = input.age || profile.defaultAge;
+    if (!ageValue) {
+      throw new Error(`Category "${profile.label}" requires 适用年龄`);
+    }
+    await selectComboboxOption(page, profile.ageContainerSelector, ageValue, '适用年龄', ageValue);
+  }
+
+  if (input.material && profile.materialSelectors.length > 0) {
+    await setTextInput(page, profile.materialSelectors, input.material, '材质');
+  }
+
+  if (input.character) {
+    await setTextInput(page, profile.characterSelectors, input.character, '角色名');
+  }
+
+  if (input.workTitle) {
+    await setTextInput(page, profile.workTitleSelectors, input.workTitle, '作品名');
+  }
+
+  if (input.region && profile.regionContainerSelector && await waitForVisibleSelector(page, [`${profile.regionContainerSelector} input[role="combobox"]`, `${profile.regionContainerSelector} .next-select`], 1.5)) {
+    await selectComboboxOption(page, profile.regionContainerSelector, input.region, '动漫地区');
+  }
+}
+
 async function ensureVisibleShelfMode(page: IPage, expected: string): Promise<void> {
   const state = await readPublishState(page);
   if (state.selectedShelfMode !== expected) {
@@ -821,6 +914,7 @@ cli({
     }
 
     let state = await advanceAiToPublish(page);
+    const profile = detectCategoryProfile(state);
 
     await setTextInput(page, ['#sell-field-title input', 'input[placeholder*="最多允许输入30个汉字"]'], title, '宝贝标题');
     await selectComboboxOption(page, '#sell-field-p-20000', brand, '品牌', brand, ['input[name="p-20000~1"]']);
@@ -831,22 +925,7 @@ cli({
       }
     }
     await setTextInput(page, ['input[name="p-20000~1"]'], model, '型号');
-    if (await waitForVisibleSelector(page, ['#struct-p-20017 input[role="combobox"]'], 1.5)) {
-      await selectComboboxOption(page, '#sell-field-p-20017', age || '14周岁以上', '适用年龄', age || '14周岁以上');
-    }
-
-    if (material) {
-      await setTextInput(page, ['input[name="p-20021"]'], material, '材质');
-    }
-    if (character) {
-      await setTextInput(page, ['#struct-p-135892197 input[role="combobox"]', 'input[name="p-587451596"]'], character, '角色名');
-    }
-    if (workTitle) {
-      await setTextInput(page, ['#sell-field-p-135924127 input[role="combobox"]'], workTitle, '作品名');
-    }
-    if (region) {
-      await selectComboboxOption(page, '#sell-field-p-18821503', region, '动漫地区');
-    }
+    await setCategorySpecificFields(page, profile, { age, material, character, workTitle, region });
 
     await setTextInput(page, ['#sell-field-price input[maxlength="15"]'], price, '一口价', 'numeric');
     await setTextInput(page, ['#struct-quantity input[maxlength="15"]', '#sell-field-batchInventory-card input[maxlength="15"]'], String(stock), '总库存', 'numeric');
@@ -867,7 +946,7 @@ cli({
         status: 'ready',
         detail:
           `Upload confirmed and publish form filled. attempts=${upload.attemptSummary}; ` +
-          `shelfMode=${state.selectedShelfMode ?? 'n/a'}; submit=false`,
+          `category=${profile.label}; shelfMode=${state.selectedShelfMode ?? 'n/a'}; submit=false`,
         item_id: null,
         item_url: null,
         page_url: state.url,
@@ -886,10 +965,10 @@ cli({
 
     const successState = await waitForSuccessPage(page, DEFAULT_SUCCESS_WAIT_SECONDS);
     return [{
-      status: 'submitted',
-      detail:
-        `Publish submitted successfully. attempts=${upload.attemptSummary}; ` +
-        `shelfMode=${successState.selectedShelfMode ?? 'success-page'}; submit=true`,
+        status: 'submitted',
+        detail:
+          `Publish submitted successfully. attempts=${upload.attemptSummary}; ` +
+          `category=${profile.label}; shelfMode=${successState.selectedShelfMode ?? 'success-page'}; submit=true`,
       item_id: successState.itemId,
       item_url: successState.itemUrl,
       page_url: successState.url,

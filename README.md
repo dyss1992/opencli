@@ -158,6 +158,14 @@ Run `opencli list` for the live registry.
 
 ### Experimental Taobao Publishing
 
+Currently verified categories:
+- Anime plush / cushions
+- Figure / prize figure
+
+Notes:
+- Figure listings handle the required age field and default to `14周岁以上` when omitted
+- Other categories will be added incrementally as they are validated
+
 ```bash
 # Upload only
 opencli taobao upload-local /path/to/images

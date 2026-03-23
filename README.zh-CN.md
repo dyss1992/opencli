@@ -160,6 +160,14 @@ npm install -g @jackwener/opencli@latest
 
 ### 淘宝发布实验命令
 
+当前已经实测跑通的类目：
+- 动漫毛绒/抱枕/坐垫
+- 手办/手办景品
+
+说明：
+- 手办类目会处理“适用年龄”，未提供时默认使用 `14周岁以上`
+- 其他类目后续再逐步补齐
+
 ```bash
 # 仅上传图片到 AI 发布页
 opencli taobao upload-local /path/to/images

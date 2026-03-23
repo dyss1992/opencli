@@ -76,6 +76,8 @@ opencli xiaohongshu creator-profile            # 创作者资料
 opencli xiaohongshu creator-stats              # 创作者数据统计
 
 # 淘宝卖家 (browser)
+# 当前已验证类目：动漫毛绒/抱枕/坐垫、手办/手办景品
+# 手办类目会自动补“适用年龄”，默认 14周岁以上
 opencli taobao upload-local /path/to/images                  # 仅上传图片到 AI 发布页
 opencli taobao manual-capture before-submit --wait 60        # 手动操作后抓取页面证据
 opencli taobao publish /path/to/images --spec ./item.yaml    # 从 YAML/JSON 读取商品字段并填表
