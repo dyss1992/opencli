@@ -211,6 +211,8 @@ async function handleCommand(cmd: Command): Promise<Result> {
         return await handleCookies(cmd);
       case 'screenshot':
         return await handleScreenshot(cmd, workspace);
+      case 'native-click':
+        return await handleNativeClick(cmd, workspace);
       case 'close-window':
         return await handleCloseWindow(cmd, workspace);
       case 'sessions':
@@ -371,6 +373,15 @@ async function handleNavigate(cmd: Command, workspace: string): Promise<Result> 
     ok: true,
     data: { title: tab.title, url: tab.url, tabId, timedOut },
   };
+}
+
+async function handleNativeClick(cmd: Command, workspace: string): Promise<Result> {
+  if (typeof cmd.x !== 'number' || typeof cmd.y !== 'number') {
+    return { id: cmd.id, ok: false, error: 'Missing native click coordinates' };
+  }
+  const tabId = await resolveTabId(cmd.tabId, workspace);
+  await executor.nativeClick(tabId, cmd.x, cmd.y);
+  return { id: cmd.id, ok: true, data: 'clicked' };
 }
 
 async function handleTabs(cmd: Command, workspace: string): Promise<Result> {

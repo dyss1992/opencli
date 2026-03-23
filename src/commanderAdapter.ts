@@ -38,6 +38,12 @@ export function registerCommandToProgram(siteCmd: Command, cmd: CliCommand): voi
       subCmd.argument(bracket, arg.help ?? '');
       positionalArgs.push(arg);
     } else {
+      if (arg.type === 'bool') {
+        const flag = `--${arg.name}`;
+        subCmd.option(flag, arg.help ?? '');
+        continue;
+      }
+
       const flag = arg.required ? `--${arg.name} <value>` : `--${arg.name} [value]`;
       if (arg.required) subCmd.requiredOption(flag, arg.help ?? '');
       else if (arg.default != null) subCmd.option(flag, arg.help ?? '', String(arg.default));

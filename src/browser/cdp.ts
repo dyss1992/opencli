@@ -14,6 +14,7 @@ import { wrapForEval } from './utils.js';
 import { generateSnapshotJs, scrollToRefJs, getFormStateJs } from './dom-snapshot.js';
 import {
   clickJs,
+  elementCenterJs,
   typeTextJs,
   pressKeyJs,
   waitForTextJs,
@@ -224,6 +225,34 @@ class CDPPage implements IPage {
 
   async click(ref: string): Promise<void> {
     await this.evaluate(clickJs(ref));
+  }
+
+  async nativeClick(ref: string): Promise<void> {
+    const point = await this.evaluate(elementCenterJs(ref)) as { x?: number; y?: number } | null;
+    if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') {
+      throw new Error(`Failed to resolve clickable center for: ${ref}`);
+    }
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      buttons: 1,
+    });
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    });
+    await this.bridge.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: point.x,
+      y: point.y,
+      button: 'left',
+      clickCount: 1,
+    });
   }
 
   async typeText(ref: string, text: string): Promise<void> {

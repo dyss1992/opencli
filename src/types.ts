@@ -49,6 +49,7 @@ export interface IPage {
   getCookies(opts?: { domain?: string; url?: string }): Promise<BrowserCookie[]>;
   snapshot(opts?: SnapshotOptions): Promise<any>;
   click(ref: string): Promise<void>;
+  nativeClick?(ref: string): Promise<void>;
   typeText(ref: string, text: string): Promise<void>;
   pressKey(key: string): Promise<void>;
   scrollTo(ref: string): Promise<any>;

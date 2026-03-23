@@ -116,6 +116,7 @@ npm install -g @jackwener/opencli@latest
 | **antigravity** | `status` `send` `read` `new` `dump` `extract-code` `model` `watch` `serve` | 桌面端 |
 | **chatgpt** | `status` `new` `send` `read` `ask` | 桌面端 |
 | **xiaohongshu** | `search` `notifications` `feed` `user` `download` `publish` `creator-notes` `creator-note-detail` `creator-notes-summary` `creator-profile` `creator-stats` | 浏览器 |
+| **taobao** | `upload-local` `manual-capture` `publish` | 浏览器 |
 | **apple-podcasts** | `search` `episodes` `top` | 公开 |
 | **xiaoyuzhou** | `podcast` `podcast-episodes` `episode` | 公开 |
 | **zhihu** | `hot` `search` `question` `download` | 浏览器 |
@@ -156,6 +157,32 @@ npm install -g @jackwener/opencli@latest
 | **substack** | `feed` `search` `publication` `shared` | 浏览器 |
 | **tiktok** | `explore` `search` `profile` `user` `following` `follow` `unfollow` `like` `unlike` `comment` `save` `unsave` `live` `notifications` `friends` | 浏览器 |
 
+
+### 淘宝发布实验命令
+
+```bash
+# 仅上传图片到 AI 发布页
+opencli taobao upload-local /path/to/images
+
+# 用 YAML/JSON 文件驱动商品发布；命令行参数会覆盖文件中的同名字段
+opencli taobao publish --spec ./item.yaml
+opencli taobao publish --spec ./item.yaml --submit
+```
+
+```yaml
+image_path: /path/to/images
+title: 现货 Cartman 卡特曼 毛绒玩具 South Park 南方公园 Youtooz正版
+brand: Youtooz
+model: Cartman Plush (9in)
+material: 毛绒
+character: Cartman
+work_title: 南方公园
+region: 美国
+price: "256"
+stock: 2
+merchant_code: 810163656262
+delivery_days: 7
+```
 
 ### 外部 CLI 枢纽
 

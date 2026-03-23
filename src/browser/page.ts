@@ -17,6 +17,7 @@ import { wrapForEval } from './utils.js';
 import { generateSnapshotJs, scrollToRefJs, getFormStateJs } from './dom-snapshot.js';
 import {
   clickJs,
+  elementCenterJs,
   typeTextJs,
   pressKeyJs,
   waitForTextJs,
@@ -146,6 +147,23 @@ export class Page implements IPage {
   async click(ref: string): Promise<void> {
     const code = clickJs(ref);
     await sendCommand('exec', { code, ...this._workspaceOpt(), ...this._tabOpt() });
+  }
+
+  async nativeClick(ref: string): Promise<void> {
+    const point = await sendCommand('exec', {
+      code: elementCenterJs(ref),
+      ...this._workspaceOpt(),
+      ...this._tabOpt(),
+    }) as { x?: number; y?: number } | null;
+    if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') {
+      throw new Error(`Failed to resolve clickable center for: ${ref}`);
+    }
+    await sendCommand('native-click', {
+      x: point.x,
+      y: point.y,
+      ...this._workspaceOpt(),
+      ...this._tabOpt(),
+    });
   }
 
   async typeText(ref: string, text: string): Promise<void> {

@@ -75,6 +75,12 @@ opencli xiaohongshu creator-notes-summary      # 笔记数据概览
 opencli xiaohongshu creator-profile            # 创作者资料
 opencli xiaohongshu creator-stats              # 创作者数据统计
 
+# 淘宝卖家 (browser)
+opencli taobao upload-local /path/to/images                  # 仅上传图片到 AI 发布页
+opencli taobao manual-capture before-submit --wait 60        # 手动操作后抓取页面证据
+opencli taobao publish /path/to/images --spec ./item.yaml    # 从 YAML/JSON 读取商品字段并填表
+opencli taobao publish --spec ./item.yaml --submit           # 走完整条“放入仓库 + 提交宝贝信息”流程
+
 # 雪球 Xueqiu (browser)
 opencli xueqiu hot-stock --limit 10      # 雪球热门股票榜
 opencli xueqiu stock --symbol SH600519   # 查看股票实时行情

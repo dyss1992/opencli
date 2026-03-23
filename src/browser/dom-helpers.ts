@@ -12,9 +12,12 @@ export function clickJs(ref: string): string {
     (() => {
       const ref = ${safeRef};
       // 1. data-opencli-ref (set by snapshot engine)
-      let el = document.querySelector('[data-opencli-ref="' + ref + '"]');
+      let el = null;
+      try { el = document.querySelector('[data-opencli-ref="' + ref.replace(/"/g, '\\"') + '"]'); } catch {}
       // 2. data-ref (legacy)
-      if (!el) el = document.querySelector('[data-ref="' + ref + '"]');
+      if (!el) {
+        try { el = document.querySelector('[data-ref="' + ref.replace(/"/g, '\\"') + '"]'); } catch {}
+      }
       // 3. CSS selector
       if (!el && ref.match(/^[a-zA-Z#.\\[]/)) {
         try { el = document.querySelector(ref); } catch {}
@@ -34,6 +37,37 @@ export function clickJs(ref: string): string {
   `;
 }
 
+/** Generate JS to return an element's center point by ref */
+export function elementCenterJs(ref: string): string {
+  const safeRef = JSON.stringify(ref);
+  return `
+    (() => {
+      const ref = ${safeRef};
+      let el = null;
+      try { el = document.querySelector('[data-opencli-ref="' + ref.replace(/"/g, '\\"') + '"]'); } catch {}
+      if (!el) {
+        try { el = document.querySelector('[data-ref="' + ref.replace(/"/g, '\\"') + '"]'); } catch {}
+      }
+      if (!el && ref.match(/^[a-zA-Z#.\\[]/)) {
+        try { el = document.querySelector(ref); } catch {}
+      }
+      if (!el) {
+        const idx = parseInt(ref, 10);
+        if (!isNaN(idx)) {
+          el = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])')[idx];
+        }
+      }
+      if (!el) throw new Error('Element not found: ' + ref);
+      el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      };
+    })()
+  `;
+}
+
 /** Generate JS to type text into an element by ref */
 export function typeTextJs(ref: string, text: string): string {
   const safeRef = JSON.stringify(ref);
@@ -42,9 +76,12 @@ export function typeTextJs(ref: string, text: string): string {
     (() => {
       const ref = ${safeRef};
       // 1. data-opencli-ref (set by snapshot engine)
-      let el = document.querySelector('[data-opencli-ref="' + ref + '"]');
+      let el = null;
+      try { el = document.querySelector('[data-opencli-ref="' + ref.replace(/"/g, '\\"') + '"]'); } catch {}
       // 2. data-ref (legacy)
-      if (!el) el = document.querySelector('[data-ref="' + ref + '"]');
+      if (!el) {
+        try { el = document.querySelector('[data-ref="' + ref.replace(/"/g, '\\"') + '"]'); } catch {}
+      }
       // 3. CSS selector
       if (!el && ref.match(/^[a-zA-Z#.\\[]/)) {
         try { el = document.querySelector(ref); } catch {}

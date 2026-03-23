@@ -114,6 +114,7 @@ Run `opencli list` for the live registry.
 | **antigravity** | `status` `send` `read` `new` `dump` `extract-code` `model` `watch` `serve` | Desktop |
 | **chatgpt** | `status` `new` `send` `read` `ask` | Desktop |
 | **xiaohongshu** | `search` `notifications` `feed` `user` `download` `publish` `creator-notes` `creator-note-detail` `creator-notes-summary` `creator-profile` `creator-stats` | Browser |
+| **taobao** | `upload-local` `manual-capture` `publish` | Browser |
 | **apple-podcasts** | `search` `episodes` `top` | Public |
 | **xiaoyuzhou** | `podcast` `podcast-episodes` `episode` | Public |
 | **zhihu** | `hot` `search` `question` `download` | Browser |
@@ -154,6 +155,32 @@ Run `opencli list` for the live registry.
 | **substack** | `feed` `search` `publication` `shared` | Browser |
 | **tiktok** | `explore` `search` `profile` `user` `following` `follow` `unfollow` `like` `unlike` `comment` `save` `unsave` `live` `notifications` `friends` | Browser |
 
+
+### Experimental Taobao Publishing
+
+```bash
+# Upload only
+opencli taobao upload-local /path/to/images
+
+# Drive the publish flow from a YAML/JSON file; CLI flags override file values
+opencli taobao publish --spec ./item.yaml
+opencli taobao publish --spec ./item.yaml --submit
+```
+
+```yaml
+image_path: /path/to/images
+title: In-stock Cartman plush South Park Youtooz
+brand: Youtooz
+model: Cartman Plush (9in)
+material: Plush
+character: Cartman
+work_title: South Park
+region: USA
+price: "256"
+stock: 2
+merchant_code: 810163656262
+delivery_days: 7
+```
 
 ### External CLI Hub
 

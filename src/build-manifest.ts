@@ -289,6 +289,10 @@ export function scanTs(filePath: string, site: string): ManifestEntry | null {
     const navMatch = src.match(/navigateBefore\s*:\s*(true|false)/);
     if (navMatch) entry.navigateBefore = navMatch[1] === 'true' ? true : false;
 
+    // Extract timeoutSeconds: 180
+    const timeoutMatch = src.match(/timeoutSeconds\s*:\s*(\d+)/);
+    if (timeoutMatch) entry.timeout = parseInt(timeoutMatch[1], 10);
+
     return entry;
   } catch (err) {
     // If parsing fails, log a warning (matching scanYaml behaviour) and skip the entry.

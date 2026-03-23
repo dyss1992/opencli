@@ -144,6 +144,31 @@ export async function screenshot(
   }
 }
 
+export async function nativeClick(tabId: number, x: number, y: number): Promise<void> {
+  await ensureAttached(tabId);
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x,
+    y,
+    button: 'left',
+    buttons: 1,
+  });
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x,
+    y,
+    button: 'left',
+    clickCount: 1,
+  });
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x,
+    y,
+    button: 'left',
+    clickCount: 1,
+  });
+}
+
 export function detach(tabId: number): void {
   if (!attached.has(tabId)) return;
   attached.delete(tabId);

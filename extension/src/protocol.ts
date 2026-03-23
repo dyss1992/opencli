@@ -1,11 +1,12 @@
 /**
  * opencli browser protocol — shared types between daemon, extension, and CLI.
  *
- * 5 actions: exec, navigate, tabs, cookies, screenshot.
+ * Browser actions include exec, navigate, tabs, cookies, screenshot,
+ * native-click, close-window, and sessions.
  * Everything else is just JS code sent via 'exec'.
  */
 
-export type Action = 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions';
+export type Action = 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'native-click' | 'close-window' | 'sessions';
 
 export interface Command {
   /** Unique request ID */
@@ -32,6 +33,9 @@ export interface Command {
   quality?: number;
   /** Whether to capture full page (not just viewport) */
   fullPage?: boolean;
+  /** Native click coordinates in the current viewport */
+  x?: number;
+  y?: number;
 }
 
 export interface Result {

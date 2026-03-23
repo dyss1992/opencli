@@ -10,7 +10,8 @@
  *   2. Custom header — require X-OpenCLI header (browsers can't send it
  *      without CORS preflight, which we deny)
  *   3. No CORS headers — responses never include Access-Control-Allow-Origin
- *   4. Body size limit — 1 MB max to prevent OOM
+ *   4. Body size limit — capped to avoid OOM while still allowing
+ *      local-media UI commands to carry a few base64-encoded images
  *   5. WebSocket verifyClient — reject upgrade before connection is established
  *
  * Lifecycle:
@@ -57,7 +58,7 @@ function resetIdleTimer(): void {
 
 // ─── HTTP Server ─────────────────────────────────────────────────────
 
-const MAX_BODY = 1024 * 1024; // 1 MB — commands are tiny; this prevents OOM
+const MAX_BODY = 64 * 1024 * 1024; // 64 MB — needed for local image upload adapters
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
