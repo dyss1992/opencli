@@ -183,6 +183,30 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
       process.exitCode = r.ok ? 0 : 1;
     });
 
+  // ── Built-in: record ─────────────────────────────────────────────────────
+
+  program
+    .command('record')
+    .description('Record API calls from a live browser session → generate YAML candidates')
+    .argument('<url>', 'URL to open and record')
+    .option('--site <name>', 'Site name (inferred from URL if omitted)')
+    .option('--out <dir>', 'Output directory for candidates')
+    .option('--poll <ms>', 'Poll interval in milliseconds', '2000')
+    .option('--timeout <ms>', 'Auto-stop after N milliseconds (default: 60000)', '60000')
+    .action(async (url, opts) => {
+      const { recordSession, renderRecordSummary } = await import('./record.js');
+      const result = await recordSession({
+        BrowserFactory: getBrowserFactory(),
+        url,
+        site: opts.site,
+        outDir: opts.out,
+        pollMs: parseInt(opts.poll, 10),
+        timeoutMs: parseInt(opts.timeout, 10),
+      });
+      console.log(renderRecordSummary(result));
+      process.exitCode = result.candidateCount > 0 ? 0 : 1;
+    });
+
   program
     .command('cascade')
     .description('Strategy cascade: find simplest working strategy')
@@ -233,10 +257,11 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
     .argument('<source>', 'Plugin source (e.g. github:user/repo)')
     .action(async (source: string) => {
       const { installPlugin } = await import('./plugin.js');
+      const { discoverPlugins } = await import('./discovery.js');
       try {
         const name = installPlugin(source);
-        console.log(chalk.green(`✅ Plugin "${name}" installed successfully.`));
-        console.log(chalk.dim(`   Restart opencli to use the new commands.`));
+        await discoverPlugins();
+        console.log(chalk.green(`✅ Plugin "${name}" installed successfully. Commands are ready to use.`));
       } catch (err: any) {
         console.error(chalk.red(`Error: ${err.message}`));
         process.exitCode = 1;
@@ -257,6 +282,24 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
         process.exitCode = 1;
       }
     });
+
+  pluginCmd
+    .command('update')
+    .description('Update a plugin to the latest version')
+    .argument('<name>', 'Plugin name')
+    .action(async (name: string) => {
+      const { updatePlugin } = await import('./plugin.js');
+      const { discoverPlugins } = await import('./discovery.js');
+      try {
+        updatePlugin(name);
+        await discoverPlugins();
+        console.log(chalk.green(`✅ Plugin "${name}" updated successfully.`));
+      } catch (err: any) {
+        console.error(chalk.red(`Error: ${err.message}`));
+        process.exitCode = 1;
+      }
+    });
+
 
   pluginCmd
     .command('list')
@@ -365,29 +408,17 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
   registerAllCommands(program, siteGroups);
 
   // ── Unknown command fallback ──────────────────────────────────────────────
-
-  const DENY_LIST = new Set([
-    'rm', 'sudo', 'dd', 'mkfs', 'fdisk', 'shutdown', 'reboot',
-    'kill', 'killall', 'chmod', 'chown', 'passwd', 'su', 'mount',
-    'umount', 'format', 'diskutil',
-  ]);
+  // Security: do NOT auto-discover and register arbitrary system binaries.
+  // Only explicitly registered external CLIs (via `opencli register`) are allowed.
 
   program.on('command:*', (operands: string[]) => {
     const binary = operands[0];
-    if (DENY_LIST.has(binary)) {
-      console.error(chalk.red(`Refusing to register system command '${binary}'.`));
-      process.exitCode = 1;
-      return;
-    }
+    console.error(chalk.red(`error: unknown command '${binary}'`));
     if (isBinaryInstalled(binary)) {
-      console.log(chalk.cyan(`🔹 Auto-discovered local CLI '${binary}'. Registering...`));
-      registerExternalCli(binary);
-      passthroughExternal(binary);
-    } else {
-      console.error(chalk.red(`error: unknown command '${binary}'`));
-      program.outputHelp();
-      process.exitCode = 1;
+      console.error(chalk.dim(`  Tip: '${binary}' exists on your PATH. Use 'opencli register ${binary}' to add it as an external CLI.`));
     }
+    program.outputHelp();
+    process.exitCode = 1;
   });
 
   program.parse();

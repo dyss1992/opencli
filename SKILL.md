@@ -1,9 +1,9 @@
 ---
 name: opencli
-description: "OpenCLI — Make any website or Electron App your CLI. Zero risk, AI-powered, reuse Chrome login. 150+ commands across 30+ sites."
-version: 1.1.0
+description: "OpenCLI — Make any website or Electron App your CLI. Zero risk, AI-powered, reuse Chrome login."
+version: 1.3.1
 author: jackwener
-tags: [cli, browser, web, chrome-extension, cdp, bilibili, zhihu, twitter, github, v2ex, hackernews, reddit, xiaohongshu, xueqiu, youtube, boss, coupang, AI, agent]
+tags: [cli, browser, web, chrome-extension, cdp, bilibili, zhihu, twitter, github, v2ex, hackernews, reddit, xiaohongshu, xueqiu, youtube, boss, coupang, yollomi, AI, agent]
 ---
 
 # OpenCLI
@@ -182,7 +182,6 @@ opencli antigravity dump               # 导出 DOM 和快照调试信息
 opencli antigravity extract-code        # 自动抽取 AI 回复中的代码块
 opencli antigravity model claude        # 切换底层模型
 opencli antigravity watch               # 流式监听增量消息
-opencli antigravity serve --port 8082  # 启动 Anthropic 兼容代理
 
 # Barchart (browser)
 opencli barchart quote --symbol AAPL     # 股票行情
@@ -222,6 +221,14 @@ opencli weread ranking --limit 10        # 排行榜
 opencli jimeng generate --prompt "描述"  # AI 生图
 opencli jimeng history --limit 10        # 生成历史
 
+# Yollomi yollomi.com (browser — 需在 Chrome 登录 yollomi.com，复用站点 session)
+opencli yollomi models --type image      # 列出图像模型与积分
+opencli yollomi generate "提示词" --model z-image-turbo   # 文生图
+opencli yollomi video "提示词" --model kling-2-1        # 视频
+opencli yollomi upload ./photo.jpg       # 上传得 URL，供 img2img / 工具链使用
+opencli yollomi remove-bg <image-url>    # 去背景（免费）
+opencli yollomi edit <image-url> "改成油画风格"        # Qwen 图像编辑
+
 # Grok (default + explicit web)
 opencli grok ask --prompt "问题"         # 提问 Grok（兼容默认路径）
 opencli grok ask --prompt "问题" --web   # 显式 grok.com consumer web UI 路径
@@ -232,6 +239,175 @@ opencli hf top --limit 10                # 热门模型
 # 超星学习通 (browser)
 opencli chaoxing assignments             # 作业列表
 opencli chaoxing exams                   # 考试列表
+
+# Douban 豆瓣 (browser)
+opencli douban search "三体"              # 搜索 (query positional)
+opencli douban top250                     # 豆瓣 Top 250
+opencli douban subject 1234567            # 条目详情 (id positional)
+opencli douban marks --limit 10           # 我的标记
+opencli douban reviews --limit 10         # 短评
+
+# Facebook (browser)
+opencli facebook feed --limit 10          # 动态流
+opencli facebook profile username         # 用户资料 (id positional)
+opencli facebook search "AI"              # 搜索 (query positional)
+opencli facebook friends                  # 好友列表
+opencli facebook groups                   # 群组
+opencli facebook events                   # 活动
+opencli facebook notifications            # 通知
+opencli facebook memories                 # 回忆
+opencli facebook add-friend username      # 添加好友 (id positional)
+opencli facebook join-group groupid       # 加入群组 (id positional)
+
+# Instagram (browser)
+opencli instagram explore                 # 探索
+opencli instagram profile username        # 用户资料 (id positional)
+opencli instagram search "AI"             # 搜索 (query positional)
+opencli instagram user username           # 用户详情 (id positional)
+opencli instagram followers username      # 粉丝 (id positional)
+opencli instagram following username      # 关注 (id positional)
+opencli instagram follow username         # 关注用户 (id positional)
+opencli instagram unfollow username       # 取消关注 (id positional)
+opencli instagram like postid             # 点赞 (id positional)
+opencli instagram unlike postid           # 取消点赞 (id positional)
+opencli instagram comment postid "评论"   # 评论 (id + text positional)
+opencli instagram save postid             # 收藏 (id positional)
+opencli instagram unsave postid           # 取消收藏 (id positional)
+opencli instagram saved                   # 已收藏列表
+
+# TikTok (browser)
+opencli tiktok explore                    # 探索
+opencli tiktok search "AI"                # 搜索 (query positional)
+opencli tiktok profile username           # 用户资料 (id positional)
+opencli tiktok user username              # 用户详情 (id positional)
+opencli tiktok following username         # 关注列表 (id positional)
+opencli tiktok follow username            # 关注 (id positional)
+opencli tiktok unfollow username          # 取消关注 (id positional)
+opencli tiktok like videoid               # 点赞 (id positional)
+opencli tiktok unlike videoid             # 取消点赞 (id positional)
+opencli tiktok comment videoid "评论"     # 评论 (id + text positional)
+opencli tiktok save videoid               # 收藏 (id positional)
+opencli tiktok unsave videoid             # 取消收藏 (id positional)
+opencli tiktok live                       # 直播
+opencli tiktok notifications              # 通知
+opencli tiktok friends                    # 朋友
+
+# Medium (browser)
+opencli medium feed --limit 10            # 动态流
+opencli medium search "AI"                # 搜索 (query positional)
+opencli medium user username              # 用户主页 (id positional)
+
+# Substack (browser)
+opencli substack feed --limit 10          # 订阅动态
+opencli substack search "AI"              # 搜索 (query positional)
+opencli substack publication name         # 出版物详情 (id positional)
+
+# Sinablog 新浪博客 (browser)
+opencli sinablog hot --limit 10           # 热门
+opencli sinablog search "AI"              # 搜索 (query positional)
+opencli sinablog article url              # 文章详情
+opencli sinablog user username            # 用户主页 (id positional)
+
+# Lobsters (public)
+opencli lobsters hot --limit 10           # 热门
+opencli lobsters newest --limit 10        # 最新
+opencli lobsters active --limit 10        # 活跃
+opencli lobsters tag rust                 # 按标签筛选 (tag positional)
+
+# Google (public)
+opencli google news --limit 10            # 新闻
+opencli google search "AI"                # 搜索 (query positional)
+opencli google suggest "AI"               # 搜索建议 (query positional)
+opencli google trends                     # 趋势
+
+# DEV.to (public)
+opencli devto top --limit 10              # 热门文章
+opencli devto tag javascript --limit 10   # 按标签 (tag positional)
+opencli devto user username               # 用户文章 (username positional)
+
+# Steam (public)
+opencli steam top-sellers --limit 10      # 热销游戏
+
+# Wikipedia (public)
+opencli wikipedia search "AI"             # 搜索 (query positional)
+opencli wikipedia summary "Python"        # 摘要 (title positional)
+```
+
+### Desktop Adapter Commands
+
+```bash
+# Cursor (desktop — CDP via Electron)
+opencli cursor status                    # 检查连接
+opencli cursor send "message"            # 发送消息
+opencli cursor read                      # 读取回复
+opencli cursor new                       # 新建对话
+opencli cursor dump                      # 导出 DOM 调试信息
+opencli cursor composer                  # Composer 模式
+opencli cursor model claude              # 切换模型
+opencli cursor extract-code              # 提取代码块
+opencli cursor ask "question"            # 一键提问并等回复
+opencli cursor screenshot                # 截图
+opencli cursor history                   # 对话历史
+opencli cursor export                    # 导出对话
+
+# Codex (desktop — headless CLI agent)
+opencli codex status                     # 检查连接
+opencli codex send "message"             # 发送消息
+opencli codex read                       # 读取回复
+opencli codex new                        # 新建对话
+opencli codex dump                       # 导出调试信息
+opencli codex extract-diff               # 提取 diff
+opencli codex model gpt-4                # 切换模型
+opencli codex ask "question"             # 一键提问并等回复
+opencli codex screenshot                 # 截图
+opencli codex history                    # 对话历史
+opencli codex export                     # 导出对话
+
+# ChatGPT (desktop — macOS AppleScript/CDP)
+opencli chatgpt status                   # 检查应用状态
+opencli chatgpt new                      # 新建对话
+opencli chatgpt send "message"           # 发送消息
+opencli chatgpt read                     # 读取回复
+opencli chatgpt ask "question"           # 一键提问并等回复
+
+# ChatWise (desktop — multi-LLM client)
+opencli chatwise status                  # 检查连接
+opencli chatwise new                     # 新建对话
+opencli chatwise send "message"          # 发送消息
+opencli chatwise read                    # 读取回复
+opencli chatwise ask "question"          # 一键提问并等回复
+opencli chatwise model claude            # 切换模型
+opencli chatwise history                 # 对话历史
+opencli chatwise export                  # 导出对话
+opencli chatwise screenshot              # 截图
+
+# Notion (desktop — CDP via Electron)
+opencli notion status                    # 检查连接
+opencli notion search "keyword"          # 搜索页面
+opencli notion read                      # 读取当前页面
+opencli notion new                       # 新建页面
+opencli notion write "content"           # 写入内容
+opencli notion sidebar                   # 侧边栏导航
+opencli notion favorites                 # 收藏列表
+opencli notion export                    # 导出
+
+# Discord App (desktop — CDP via Electron)
+opencli discord-app status               # 检查连接
+opencli discord-app send "message"       # 发送消息
+opencli discord-app read                 # 读取消息
+opencli discord-app channels             # 频道列表
+opencli discord-app servers              # 服务器列表
+opencli discord-app search "keyword"     # 搜索
+opencli discord-app members              # 成员列表
+
+# Doubao App 豆包桌面版 (desktop — CDP via Electron)
+opencli doubao-app status                # 检查连接
+opencli doubao-app new                   # 新建对话
+opencli doubao-app send "message"        # 发送消息
+opencli doubao-app read                  # 读取回复
+opencli doubao-app ask "question"        # 一键提问并等回复
+opencli doubao-app screenshot            # 截图
+opencli doubao-app dump                  # 导出 DOM 调试信息
 ```
 
 ### Management Commands
@@ -259,14 +435,26 @@ opencli synthesize <site>
 # Generate: one-shot explore → synthesize → register
 opencli generate <url> --goal "hot"
 
+# Record: YOU operate the page, opencli captures every API call → YAML candidates
+# Opens the URL in automation window, injects fetch/XHR interceptor into ALL tabs,
+# polls every 2s, auto-stops after 60s (or press Enter to stop early).
+opencli record <url>                            # 录制，site name 从域名推断
+opencli record <url> --site mysite             # 指定 site name
+opencli record <url> --timeout 120000          # 自定义超时（毫秒，默认 60000）
+opencli record <url> --poll 1000               # 缩短轮询间隔（毫秒，默认 2000）
+opencli record <url> --out .opencli/record/x   # 自定义输出目录
+# Output:
+#   .opencli/record/<site>/captured.json        ← 原始捕获数据（带 url/method/body）
+#   .opencli/record/<site>/candidates/*.yaml    ← 高置信度候选适配器（score ≥ 8，有 array 结果）
+
 # Strategy Cascade: auto-probe PUBLIC → COOKIE → HEADER
 opencli cascade <api-url>
 
 # Explore with interactive fuzzing (click buttons to trigger lazy APIs)
 opencli explore <url> --auto --click "字幕,CC,评论"
 
-# Verify: validate adapter definitions
-opencli verify
+# Validate: validate adapter definitions
+opencli validate
 ```
 
 ## Output Formats
@@ -288,6 +476,129 @@ opencli bilibili hot -f csv     # CSV
 ```bash
 opencli bilibili hot -v         # Show each pipeline step and data flow
 ```
+
+## Record Workflow
+
+`record` 是为「无法用 `explore` 自动发现」的页面（需要登录操作、复杂交互、SPA 内路由）准备的手动录制方案。
+
+### 工作原理
+
+```
+opencli record <url>
+  → 打开 automation window 并导航到目标 URL
+  → 向所有 tab 注入 fetch/XHR 拦截器（幂等，可重复注入）
+  → 每 2s 轮询一次：发现新 tab 自动注入，drain 所有 tab 的捕获缓冲区
+  → 超时（默认 60s）或按 Enter 停止
+  → 分析捕获到的 JSON 请求：去重 → 评分 → 生成候选 YAML
+```
+
+**拦截器特性**：
+- 同时 patch `window.fetch` 和 `XMLHttpRequest`
+- 只捕获 `Content-Type: application/json` 的响应
+- 过滤纯对象少于 2 个 key 的响应（避免 tracking/ping）
+- 跨 tab 隔离：每个 tab 独立缓冲区，轮询时分别 drain
+- 幂等注入：同一 tab 二次注入时先 restore 原始函数再重新 patch，不丢失已捕获数据
+
+### 使用步骤
+
+```bash
+# 1. 启动录制（建议 --timeout 给足操作时间）
+opencli record "https://example.com/page" --timeout 120000
+
+# 2. 在弹出的 automation window 里正常操作页面：
+#    - 打开列表、搜索、点击条目、切换 Tab
+#    - 凡是触发网络请求的操作都会被捕获
+
+# 3. 完成操作后按 Enter 停止（或等超时自动停止）
+
+# 4. 查看结果
+cat .opencli/record/<site>/captured.json        # 原始捕获
+ls  .opencli/record/<site>/candidates/          # 候选 YAML
+```
+
+### 页面类型与捕获预期
+
+| 页面类型 | 预期捕获量 | 说明 |
+|---------|-----------|------|
+| 列表/搜索页 | 多（5~20+） | 每次搜索/翻页都会触发新请求 |
+| 详情页（只读） | 少（1~5） | 首屏数据一次性返回，后续操作走 form/redirect |
+| SPA 内路由跳转 | 中等 | 路由切换会触发新接口，但首屏请求在注入前已发出 |
+| 需要登录的页面 | 视操作而定 | 确保 Chrome 已登录目标网站 |
+
+> **注意**：如果页面在导航完成前就发出了大部分请求（服务端渲染 / SSR 注水），拦截器会错过这些请求。
+> 解决方案：在页面加载完成后，手动触发能产生新请求的操作（搜索、翻页、切 Tab、展开折叠项等）。
+
+### 候选 YAML → TS CLI 转换
+
+生成的候选 YAML 是起点，通常需要转换为 TypeScript（尤其是 tae 等内部系统）：
+
+**候选 YAML 结构**（自动生成）：
+```yaml
+site: tae
+name: getList          # 从 URL path 推断的名称
+strategy: cookie
+browser: true
+pipeline:
+  - navigate: https://...
+  - evaluate: |
+      (async () => {
+        const res = await fetch('/approval/getList.json?procInsId=...', { credentials: 'include' });
+        const data = await res.json();
+        return (data?.content?.operatorRecords || []).map(item => ({ ... }));
+      })()
+```
+
+**转换为 TS CLI**（参考 `src/clis/tae/add-expense.ts` 风格）：
+```typescript
+import { cli, Strategy } from '../../registry.js';
+
+cli({
+  site: 'tae',
+  name: 'get-approval',
+  description: '查看报销单审批流程和操作记录',
+  domain: 'tae.alibaba-inc.com',
+  strategy: Strategy.COOKIE,
+  browser: true,
+  args: [
+    { name: 'proc_ins_id', type: 'string', required: true, positional: true, help: '流程实例 ID（procInsId）' },
+  ],
+  columns: ['step', 'operator', 'action', 'time'],
+  func: async (page, kwargs) => {
+    await page.goto('https://tae.alibaba-inc.com/expense/pc.html?_authType=SAML');
+    await page.wait(2);
+    const result = await page.evaluate(`(async () => {
+      const res = await fetch('/approval/getList.json?taskId=&procInsId=${kwargs.proc_ins_id}', {
+        credentials: 'include'
+      });
+      const data = await res.json();
+      return data?.content?.operatorRecords || [];
+    })()`);
+    return (result as any[]).map((r, i) => ({
+      step: i + 1,
+      operator: r.operatorName || r.userId,
+      action: r.operationType,
+      time: r.operateTime,
+    }));
+  },
+});
+```
+
+**转换要点**：
+1. URL 中的动态 ID（`procInsId`、`taskId` 等）提取为 `args`
+2. `captured.json` 里的真实 body 结构用于确定正确的数据路径（如 `content.operatorRecords`）
+3. tae 系统统一用 `{ success, content, errorCode, errorMsg }` 外层包裹，取数据要走 `content.*`
+4. 认证方式：cookie（`credentials: 'include'`），不需要额外 header
+5. 文件放入 `src/clis/<site>/`，无需手动注册，`npm run build` 后自动发现
+
+### 故障排查
+
+| 现象 | 原因 | 解法 |
+|------|------|------|
+| 捕获 0 条请求 | 拦截器注入失败，或页面无 JSON API | 检查 daemon 是否运行：`curl localhost:19825/status` |
+| 捕获量少（1~3 条） | 页面是只读详情页，首屏数据已在注入前发出 | 手动操作触发更多请求（搜索/翻页），或换用列表页 |
+| 候选 YAML 为 0 | 捕获到的 JSON 都没有 array 结构 | 直接看 `captured.json` 手写 TS CLI |
+| 新开的 tab 没有被拦截 | 轮询间隔内 tab 已关闭 | 缩短 `--poll 500` |
+| 二次运行 record 时数据不连续 | 正常，每次 `record` 启动都是新的 automation window | 无需处理 |
 
 ## Creating Adapters
 

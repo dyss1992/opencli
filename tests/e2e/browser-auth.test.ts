@@ -101,7 +101,7 @@ describe('login-required commands — graceful failure', () => {
   }, 60_000);
 
   it('linux-do search fails gracefully without login', async () => {
-    await expectGracefulAuthFailure(['linux-do', 'search', '--keyword', 'test', '--limit', '3', '-f', 'json'], 'linux-do search');
+    await expectGracefulAuthFailure(['linux-do', 'search', 'test', '--limit', '3', '-f', 'json'], 'linux-do search');
   }, 60_000);
 
   // ── xiaohongshu (requires login) ──
@@ -111,5 +111,14 @@ describe('login-required commands — graceful failure', () => {
 
   it('xiaohongshu notifications fails gracefully without login', async () => {
     await expectGracefulAuthFailure(['xiaohongshu', 'notifications', '--limit', '3', '-f', 'json'], 'xiaohongshu notifications');
+  }, 60_000);
+
+  // ── yollomi (requires login session) ──
+  it('yollomi generate fails gracefully without login', async () => {
+    await expectGracefulAuthFailure(['yollomi', 'generate', 'a cute cat', '--no-download', '-f', 'json'], 'yollomi generate');
+  }, 60_000);
+
+  it('yollomi video fails gracefully without login', async () => {
+    await expectGracefulAuthFailure(['yollomi', 'video', 'a sunset over the ocean', '--no-download', '-f', 'json'], 'yollomi video');
   }, 60_000);
 });
