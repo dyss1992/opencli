@@ -11,6 +11,7 @@ const DEFAULT_SUCCESS_WAIT_SECONDS = 30;
 
 type PublishInput = {
   imagePath?: string;
+  category?: string;
   title?: string;
   brand?: string;
   model?: string;
@@ -43,10 +44,14 @@ type PublishState = {
 };
 
 type CategoryProfile = {
-  key: 'plush' | 'figure';
+  key: 'plush' | 'figure' | 'homeware';
   label: string;
   catIds: string[];
   pathHints: string[];
+  inputHints: string[];
+  aiSearchKeyword?: string;
+  aiTargetLeaf?: string;
+  aiTreePath?: string[];
   materialSelectors: string[];
   characterSelectors: string[];
   workTitleSelectors: string[];
@@ -61,6 +66,7 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     label: '动漫毛绒',
     catIds: ['122676006'],
     pathHints: ['动漫毛绒', '毛绒'],
+    inputHints: ['毛绒', 'plush'],
     materialSelectors: ['input[name="p-20021"]'],
     characterSelectors: ['input[name="p-587451596"]'],
     workTitleSelectors: ['#sell-field-p-135924127 input[role="combobox"]'],
@@ -71,6 +77,7 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     label: '手办',
     catIds: ['50008406'],
     pathHints: ['手办', '手办景品'],
+    inputHints: ['手办', 'figure', '景品'],
     materialSelectors: [],
     characterSelectors: ['#struct-p-135892197 input[role="combobox"]'],
     workTitleSelectors: ['#sell-field-p-135924127 input[role="combobox"]'],
@@ -78,14 +85,57 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     ageContainerSelector: '#sell-field-p-20017',
     defaultAge: '14周岁以上',
   },
+  {
+    key: 'homeware',
+    label: '动漫水杯/居家/百货',
+    catIds: ['122678005'],
+    pathHints: ['动漫水杯/居家/百货', '居家/百货', '水杯'],
+    inputHints: ['夜灯', 'night light', '居家', '百货', '水杯'],
+    aiSearchKeyword: '水杯',
+    aiTargetLeaf: '动漫水杯/居家/百货',
+    aiTreePath: ['模玩/动漫/周边/娃圈三坑/桌游', '卡通/动漫周边', '动漫水杯/居家/百货'],
+    materialSelectors: [],
+    characterSelectors: [],
+    workTitleSelectors: [],
+    regionContainerSelector: '#sell-field-p-18821503',
+  },
 ];
 
+function normalizeText(value: unknown): string {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeLower(value: unknown): string {
+  return normalizeText(value).toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function snapshotToText(snapshot: unknown): string {
+  return typeof snapshot === 'string' ? snapshot : JSON.stringify(snapshot);
+}
+
+function findSnapshotRefByLabel(snapshot: unknown, label: string): string | null {
+  const text = snapshotToText(snapshot);
+  const exactTitle = text.match(new RegExp(`\\[(\\d+)\\]<[^\\n>]*title=${escapeRegExp(label)}(?:\\s|/|>)`, 'i'));
+  if (exactTitle?.[1]) return exactTitle[1];
+
+  const exactTagText = text.match(new RegExp(`\\[(\\d+)\\]<[^\\n>]*>${escapeRegExp(label)}<`, 'i'));
+  if (exactTagText?.[1]) return exactTagText[1];
+
+  return null;
+}
+
+function matchesCategoryProfile(state: PublishState, profile: CategoryProfile): boolean {
+  const normalizedPath = normalizeLower(state.categoryPath);
+  return (state.catId ? profile.catIds.includes(state.catId) : false) ||
+    profile.pathHints.some((hint) => normalizedPath.includes(normalizeLower(hint)));
+}
+
 function detectCategoryProfile(state: PublishState): CategoryProfile {
-  const normalizedPath = state.categoryPath ?? '';
-  const profile = CATEGORY_PROFILES.find((candidate) =>
-    (state.catId && candidate.catIds.includes(state.catId)) ||
-    candidate.pathHints.some((hint) => normalizedPath.includes(hint))
-  );
+  const profile = CATEGORY_PROFILES.find((candidate) => matchesCategoryProfile(state, candidate));
 
   if (profile) return profile;
 
@@ -93,6 +143,21 @@ function detectCategoryProfile(state: PublishState): CategoryProfile {
     `Unsupported Taobao category for publish automation. ` +
     `catId=${state.catId ?? 'n/a'}; path=${state.categoryPath ?? 'n/a'}`,
   );
+}
+
+function detectDesiredCategoryProfile(input: Pick<PublishInput, 'category' | 'title' | 'model'>): CategoryProfile | null {
+  const haystack = [
+    normalizeLower(input.category),
+    normalizeLower(input.title),
+    normalizeLower(input.model),
+  ].filter(Boolean);
+
+  if (haystack.length === 0) return null;
+
+  return CATEGORY_PROFILES.find((profile) =>
+    profile.pathHints.some((hint) => haystack.some((value) => value.includes(normalizeLower(hint)))) ||
+    profile.inputHints.some((hint) => haystack.some((value) => value.includes(normalizeLower(hint))))
+  ) ?? null;
 }
 
 function inferMerchantCode(inputPath: string): string {
@@ -182,6 +247,7 @@ function loadPublishInput(specPath: string): PublishInput {
     imagePath: imagePath
       ? (path.isAbsolute(imagePath) ? imagePath : path.resolve(path.dirname(absPath), imagePath))
       : undefined,
+    category: pickString(scoped, ['category', 'category-path', 'category_path', 'categoryPath']),
     title: pickString(scoped, ['title']),
     brand: pickString(scoped, ['brand']),
     model: pickString(scoped, ['model']),
@@ -233,6 +299,10 @@ async function readPublishState(page: IPage): Promise<PublishState> {
       })();
 
       const currentUrl = String(location.href || '');
+      const visibleCategoryPath = Array.from(document.querySelectorAll('#sell-field-category .path-name, .sell-component-category-line .path-name'))
+        .find((candidate) => candidate instanceof HTMLElement && isVisible(candidate));
+      const hasVisibleCategoryBlock = Array.from(document.querySelectorAll('#sell-field-category, .sell-component-category-line, .switch-cate-btn'))
+        .some((candidate) => candidate instanceof HTMLElement && isVisible(candidate));
       let itemId = null;
       try {
         const parsed = new URL(currentUrl, location.origin);
@@ -261,9 +331,9 @@ async function readPublishState(page: IPage): Promise<PublishState> {
         isPublishPage: /\\/sell\\/v2\\/publish\\.htm\\b/i.test(currentUrl),
         isSuccessPage: /\\/sell\\/v2\\/success\\.htm\\b/i.test(currentUrl),
         hasNextButton: Boolean(aiNextButton),
-        hasCategoryBlock: pageText.includes('商品类目'),
+        hasCategoryBlock: hasVisibleCategoryBlock,
         confirmedUploadCount: Math.max(summaryCount, thumbnailCount),
-        categoryPath: normalize(document.querySelector('.path-name')?.textContent || '') || null,
+        categoryPath: normalize(visibleCategoryPath?.textContent || '') || null,
         selectedShelfMode: selectedShelfLabel || null,
         itemId,
         itemUrl: itemLink ? String(itemLink.href || itemLink.getAttribute('href') || '') : null,
@@ -348,6 +418,534 @@ async function clickAiNextButton(page: IPage): Promise<boolean> {
     })()
   `);
   return Boolean(result?.clicked);
+}
+
+async function advanceAiOnce(page: IPage): Promise<PublishState> {
+  const clicked = await clickAiNextButton(page);
+  if (!clicked) {
+    return readPublishState(page);
+  }
+
+  await page.wait({ time: 3 });
+
+  let state = await readPublishState(page);
+  for (let settle = 0; settle < 5; settle += 1) {
+    if (state.isPublishPage) return state;
+    if (state.isAiPage && await waitForVisibleSelector(page, ['#sell-field-category .switch-cate-btn', '.switch-cate-btn'], 0.5)) {
+      return readPublishState(page);
+    }
+    if (state.isAiPage && (state.hasCategoryBlock || state.categoryPath)) return state;
+    await page.wait({ time: 1 });
+    state = await readPublishState(page);
+  }
+  return state;
+}
+
+async function ensureAiCategoryReviewPage(page: IPage): Promise<PublishState> {
+  let state = await readPublishState(page);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (state.isPublishPage) return state;
+    if (state.isAiPage && await waitForVisibleSelector(page, ['#sell-field-category .switch-cate-btn', '.switch-cate-btn'], 0.5)) {
+      return readPublishState(page);
+    }
+    if (state.isAiPage && (state.hasCategoryBlock || state.categoryPath)) return state;
+    if (!state.isAiPage || !state.hasNextButton) break;
+    state = await advanceAiOnce(page);
+  }
+  return state;
+}
+
+async function waitForAiCategoryReviewReady(page: IPage, timeoutSeconds: number): Promise<boolean> {
+  return waitForVisibleSelector(
+    page,
+    [
+      '#sell-field-category .switch-cate-btn',
+      '.switch-cate-btn',
+      '#sell-field-category .recommend-cate .path-name[data-cur="pointer"]',
+      '#sell-field-category .recommend-cate .path-name',
+    ],
+    timeoutSeconds,
+  );
+}
+
+async function waitForAiCategorySearchOpen(page: IPage, timeoutSeconds: number): Promise<boolean> {
+  for (let i = 0; i < timeoutSeconds * 2; i += 1) {
+    const visible = await page.evaluate(`
+      (() => {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        return Array.from(document.querySelectorAll('.sell-component-general-category-searchwrap input[placeholder*="类目关键词"], .sell-component-general-category-searchwrap input[placeholder*="产品名称"], input[placeholder*="可输入产品名称"]'))
+          .some((candidate) => isVisible(candidate));
+      })()
+    `);
+    if (visible) return true;
+    await page.wait({ time: 0.5 });
+  }
+  return false;
+}
+
+async function openAiCategorySearch(page: IPage): Promise<void> {
+  if (await waitForAiCategorySearchOpen(page, 1)) return;
+  if (!await waitForAiCategoryReviewReady(page, 8)) {
+    throw new Error('AI category review page did not finish loading before opening 更多类目');
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const result = await page.evaluate(`
+      (() => {
+        const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const fireClick = (el) => {
+          el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+          el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+          el.click();
+        };
+        const exact = document.querySelector('#sell-field-category .switch-cate-btn, .switch-cate-btn');
+        if (exact instanceof HTMLElement && isVisible(exact)) {
+          fireClick(exact);
+          return { clicked: true, source: 'switch-cate-btn' };
+        }
+        const fallback = Array.from(document.querySelectorAll('#sell-field-category button, button, a, span, div'))
+          .find((candidate) => {
+            if (!(candidate instanceof HTMLElement) || !isVisible(candidate)) return false;
+            return normalize(candidate.innerText || candidate.textContent || '') === '更多类目';
+          });
+        if (!(fallback instanceof HTMLElement)) return { clicked: false };
+        fireClick(fallback);
+        return { clicked: true, source: 'text' };
+      })()
+    `);
+
+    if (result?.clicked) break;
+    if (attempt === 4) {
+      throw new Error('Could not open the AI category search panel');
+    }
+    await page.wait({ time: 1 });
+  }
+
+  if (!await waitForAiCategorySearchOpen(page, 5)) {
+    throw new Error('AI category search panel did not become visible after clicking 更多类目');
+  }
+}
+
+async function clickVisibleTextInRoots(
+  page: IPage,
+  labels: string[],
+  rootSelectors: string[],
+): Promise<{ clicked: boolean; label?: string; text?: string }> {
+  return page.evaluate(`
+    (() => {
+      const labels = ${JSON.stringify(labels)};
+      const rootSelectors = ${JSON.stringify(rootSelectors)};
+      const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+      const normalizeLower = (value) => normalize(value).toLowerCase();
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const fireClick = (el) => {
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        el.click();
+      };
+      const roots = rootSelectors
+        .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+        .filter((candidate) => isVisible(candidate));
+      const candidates = [];
+      for (const root of roots) {
+        for (const element of Array.from(root.querySelectorAll('button, a, label, span, div, li, em, p, h1, h2, h3, h4'))) {
+          if (!(element instanceof HTMLElement) || !isVisible(element)) continue;
+          const text = normalize(element.innerText || element.textContent || '');
+          if (!text) continue;
+          const host = element.closest('button, a, label, [role="button"], li') || element;
+          if (!(host instanceof HTMLElement) || !isVisible(host)) continue;
+          candidates.push({ host, text });
+        }
+      }
+
+      for (const label of labels) {
+        const exact = candidates.find((candidate) => normalizeLower(candidate.text) === normalizeLower(label));
+        if (exact) {
+          fireClick(exact.host);
+          return { clicked: true, label, text: exact.text };
+        }
+      }
+      for (const label of labels) {
+        const fuzzy = candidates.find((candidate) => normalizeLower(candidate.text).includes(normalizeLower(label)));
+        if (fuzzy) {
+          fireClick(fuzzy.host);
+          return { clicked: true, label, text: fuzzy.text };
+        }
+      }
+      return { clicked: false };
+    })()
+  `);
+}
+
+async function waitForAiCategoryProfile(page: IPage, profile: CategoryProfile, timeoutSeconds: number): Promise<PublishState | null> {
+  for (let i = 0; i < timeoutSeconds; i += 1) {
+    const state = await readPublishState(page);
+    if (matchesCategoryProfile(state, profile)) return state;
+    await page.wait({ time: 1 });
+  }
+  return null;
+}
+
+async function clickSnapshotRef(page: IPage, ref: string): Promise<void> {
+  if (typeof page.nativeClick === 'function') {
+    await page.nativeClick(ref);
+    return;
+  }
+  await page.click(ref);
+}
+
+async function clickAiDialogHistoryCategory(page: IPage, label: string): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const label = ${JSON.stringify(label)};
+      const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!(dialog instanceof HTMLElement)) return { ok: false };
+
+      const tabs = Array.from(dialog.querySelectorAll('[role="tab"], li[role="tab"], [role="tab"] div'))
+        .map((candidate) => candidate.closest('[role="tab"], li[role="tab"]') || candidate)
+        .filter((candidate, index, arr) => arr.indexOf(candidate) === index)
+        .filter((candidate) => candidate instanceof HTMLElement && isVisible(candidate));
+      const target = tabs.find((candidate) => normalize(candidate.innerText || candidate.textContent || '') === label);
+      if (!(target instanceof HTMLElement)) return { ok: false };
+      target.click();
+      return { ok: true };
+    })()
+  `);
+  return Boolean(result?.ok);
+}
+
+async function clickAiDialogCategoryLeaf(page: IPage, label: string): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const label = ${JSON.stringify(label)};
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!(dialog instanceof HTMLElement)) return { ok: false };
+      const target = Array.from(dialog.querySelectorAll('li[title]'))
+        .find((candidate) => candidate.getAttribute('title') === label && isVisible(candidate));
+      if (!(target instanceof HTMLElement)) return { ok: false };
+      target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      target.click();
+      return { ok: true };
+    })()
+  `);
+  return Boolean(result?.ok);
+}
+
+async function clickAiDialogLastButton(page: IPage): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!(dialog instanceof HTMLElement)) return { ok: false };
+      const buttons = Array.from(dialog.querySelectorAll('button'))
+        .filter((candidate) => candidate instanceof HTMLButtonElement && isVisible(candidate) && !candidate.disabled);
+      const target = buttons.at(-1);
+      if (!(target instanceof HTMLButtonElement)) return { ok: false };
+      target.click();
+      return { ok: true };
+    })()
+  `);
+  return Boolean(result?.ok);
+}
+
+async function clickAiCategoryDialogSearchButton(page: IPage): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!(dialog instanceof HTMLElement)) return { ok: false };
+      const target = Array.from(dialog.querySelectorAll('button.search-btn, button'))
+        .find((candidate) => candidate instanceof HTMLButtonElement && isVisible(candidate) && /搜索/.test(candidate.innerText || candidate.textContent || ''));
+      if (!(target instanceof HTMLButtonElement)) return { ok: false };
+      target.click();
+      return { ok: true };
+    })()
+  `);
+  return Boolean(result?.ok);
+}
+
+async function waitForAiDialogLeafSelected(page: IPage, label: string, timeoutSeconds: number): Promise<boolean> {
+  for (let i = 0; i < timeoutSeconds * 2; i += 1) {
+    const selected = await page.evaluate(`
+      (() => {
+        const label = ${JSON.stringify(label)};
+        const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+        const dialog = document.querySelector('[role="dialog"]');
+        if (!(dialog instanceof HTMLElement)) return false;
+        const selectedLeaf = dialog.querySelector('li.category-item.selected[title]');
+        if (selectedLeaf && selectedLeaf.getAttribute('title') === label) return true;
+        const pathText = normalize(dialog.querySelector('.category-path-wrap .path-list')?.textContent || '');
+        return pathText.includes(label);
+      })()
+    `);
+    if (selected) return true;
+    await page.wait({ time: 0.5 });
+  }
+  return false;
+}
+
+async function clickAiCategorySelectionConfirm(page: IPage): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const target = document.querySelector('.sell-component-category-line-cat-dlg-btn button');
+      if (!(target instanceof HTMLButtonElement) || !isVisible(target) || target.disabled) return { ok: false };
+      target.click();
+      return { ok: true };
+    })()
+  `);
+  return Boolean(result?.ok);
+}
+
+async function waitForAiCategorySwitchConfirm(page: IPage, timeoutSeconds: number): Promise<boolean> {
+  for (let i = 0; i < timeoutSeconds * 2; i += 1) {
+    const visible = await page.evaluate(`
+      (() => {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const dialog = document.querySelector('[role="alertdialog"]');
+        return dialog instanceof HTMLElement && isVisible(dialog);
+      })()
+    `);
+    if (visible) return true;
+    await page.wait({ time: 0.5 });
+  }
+  return false;
+}
+
+async function clickAiCategorySwitchConfirm(page: IPage): Promise<boolean> {
+  const result = await page.evaluate(`
+    (() => {
+      const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim();
+      const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const dialog = document.querySelector('[role="alertdialog"]');
+      if (!(dialog instanceof HTMLElement)) return { ok: false };
+      const target = Array.from(dialog.querySelectorAll('button'))
+        .find((candidate) =>
+          candidate instanceof HTMLButtonElement &&
+          isVisible(candidate) &&
+          !candidate.disabled &&
+          normalize(candidate.innerText || candidate.textContent || '') === '确定'
+        );
+      if (!(target instanceof HTMLButtonElement)) return { ok: false };
+      target.click();
+      return { ok: true };
+    })()
+  `);
+  return Boolean(result?.ok);
+}
+
+async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): Promise<PublishState> {
+  let state = await readPublishState(page);
+  if (!state.isAiPage) return state;
+  if (matchesCategoryProfile(state, profile)) return state;
+
+  await openAiCategorySearch(page);
+
+  if (profile.aiSearchKeyword && profile.aiTargetLeaf) {
+    await setTextInput(
+      page,
+      ['[role="dialog"] input[placeholder*="类目搜索"]'],
+      profile.aiSearchKeyword,
+      '类目搜索',
+    );
+    if (!await clickAiCategoryDialogSearchButton(page)) {
+      throw new Error(`Could not click the category search button for ${profile.label}`);
+    }
+    await page.wait({ time: 2 });
+
+    if (!await clickAiDialogCategoryLeaf(page, profile.aiTargetLeaf)) {
+      throw new Error(`Could not select ${profile.aiTargetLeaf} from the category search results`);
+    }
+    if (!await waitForAiDialogLeafSelected(page, profile.aiTargetLeaf, 4)) {
+      throw new Error(`The category dialog did not mark ${profile.aiTargetLeaf} as selected`);
+    }
+
+    if (!await clickAiCategorySelectionConfirm(page)) {
+      throw new Error(`Could not confirm ${profile.aiTargetLeaf} in the category selection dialog`);
+    }
+    if (!await waitForAiCategorySwitchConfirm(page, 4)) {
+      throw new Error(`The category switch confirmation dialog did not appear for ${profile.aiTargetLeaf}`);
+    }
+    if (!await clickAiCategorySwitchConfirm(page)) {
+      throw new Error(`Could not confirm the category switch for ${profile.aiTargetLeaf}`);
+    }
+
+    const matched = await waitForAiCategoryProfile(page, profile, 10);
+    if (matched) return matched;
+  }
+
+  const selectionRoots = [
+    '.next-dialog',
+    '.next-overlay-inner',
+    '.next-overlay-wrapper',
+    '.cascade-selection',
+    '.category-list',
+    '.list-frame',
+    '.sell-component-general-category',
+    '.sell-component-general-category-searchwrap',
+  ];
+
+  if (profile.aiTargetLeaf) {
+    if (await clickAiDialogHistoryCategory(page, profile.aiTargetLeaf)) {
+      const matched = await waitForAiCategoryProfile(page, profile, 6);
+      if (matched) return matched;
+    }
+
+    if (await clickAiDialogCategoryLeaf(page, profile.aiTargetLeaf)) {
+      let matched = await waitForAiCategoryProfile(page, profile, 3);
+      if (matched) return matched;
+
+      if (await clickAiDialogLastButton(page)) {
+        matched = await waitForAiCategoryProfile(page, profile, 6);
+        if (matched) return matched;
+      }
+    }
+
+    const snapshot = await page.snapshot({ interactive: true, compact: false, maxTextLength: 200 });
+    const exactRef = findSnapshotRefByLabel(snapshot, profile.aiTargetLeaf);
+    if (exactRef) {
+      await clickSnapshotRef(page, exactRef);
+      const matched = await waitForAiCategoryProfile(page, profile, 8);
+      if (matched) return matched;
+    }
+
+    const clicked = await clickVisibleTextInRoots(
+      page,
+      [profile.aiTargetLeaf],
+      selectionRoots,
+    );
+    if (clicked.clicked) {
+      const matched = await waitForAiCategoryProfile(page, profile, 8);
+      if (matched) return matched;
+    }
+  }
+
+  if (profile.aiSearchKeyword) {
+    await setTextInput(
+      page,
+      [
+        '.sell-component-general-category-searchwrap input[placeholder*="类目关键词"]',
+        '.sell-component-general-category-searchwrap input[placeholder*="产品名称"]',
+        'input[placeholder*="可输入产品名称"]',
+      ],
+      profile.aiSearchKeyword,
+      '类目搜索',
+    );
+    const searchClick = await clickVisibleTextInRoots(page, ['搜索'], selectionRoots);
+    if (searchClick.clicked) {
+      await page.wait({ time: 2 });
+      const clicked = await clickVisibleTextInRoots(page, [profile.aiTargetLeaf ?? profile.aiSearchKeyword], selectionRoots);
+      if (clicked.clicked) {
+        const matched = await waitForAiCategoryProfile(page, profile, 8);
+        if (matched) return matched;
+      }
+    }
+  }
+
+  if (profile.aiTreePath && profile.aiTreePath.length > 0) {
+    await clickVisibleTextInRoots(
+      page,
+      ['选择类目'],
+      selectionRoots,
+    );
+    await page.wait({ time: 1 });
+
+    for (const segment of profile.aiTreePath) {
+      const snapshot = await page.snapshot({ interactive: true, compact: false, maxTextLength: 200 });
+      const ref = findSnapshotRefByLabel(snapshot, segment);
+      if (ref) {
+        await clickSnapshotRef(page, ref);
+        await page.wait({ time: 1.2 });
+        state = await readPublishState(page);
+        if (matchesCategoryProfile(state, profile)) return state;
+        continue;
+      }
+
+      const clicked = await clickVisibleTextInRoots(
+        page,
+        [segment],
+        selectionRoots.concat('body'),
+      );
+      if (!clicked.clicked) continue;
+      await page.wait({ time: 1.2 });
+      state = await readPublishState(page);
+      if (matchesCategoryProfile(state, profile)) return state;
+    }
+  }
+
+  const finalState = await waitForAiCategoryProfile(page, profile, 8);
+  if (finalState) return finalState;
+
+  state = await readPublishState(page);
+  throw new Error(
+    `Failed to switch the AI page category to ${profile.label}. ` +
+    `Current catId=${state.catId ?? 'n/a'}; path=${state.categoryPath ?? 'n/a'}`,
+  );
 }
 
 async function advanceAiToPublish(page: IPage): Promise<PublishState> {
@@ -802,11 +1400,11 @@ async function setCategorySpecificFields(
     await setTextInput(page, profile.materialSelectors, input.material, '材质');
   }
 
-  if (input.character) {
+  if (input.character && profile.characterSelectors.length > 0) {
     await setTextInput(page, profile.characterSelectors, input.character, '角色名');
   }
 
-  if (input.workTitle) {
+  if (input.workTitle && profile.workTitleSelectors.length > 0) {
     await setTextInput(page, profile.workTitleSelectors, input.workTitle, '作品名');
   }
 
@@ -863,6 +1461,7 @@ cli({
       help: '本地图片文件或目录路径；也可放在 --spec 文件里',
     },
     { name: 'spec', required: false, help: '商品配置文件路径，支持 YAML/JSON；命令行参数会覆盖文件中的同名字段' },
+    { name: 'category', required: false, help: '目标类目，例如 动漫水杯/居家/百货；会在 AI 上传页纠正类目' },
     { name: 'title', required: false, help: '淘宝宝贝标题' },
     { name: 'brand', required: false, help: '品牌，例如 Youtooz' },
     { name: 'model', required: false, help: '型号，例如 Cartman Plush (9in)' },
@@ -882,10 +1481,13 @@ cli({
   func: async (page: IPage | null, kwargs) => {
     if (!page) throw new Error('Browser page required');
 
+    await page.newTab();
+
     const specPath = toOptionalString(kwargs.spec);
     const spec = specPath ? loadPublishInput(specPath) : {};
 
     const imagePath = toOptionalString(kwargs['image-path']) ?? spec.imagePath ?? '';
+    const category = toOptionalString(kwargs.category) ?? spec.category ?? '';
     const title = toOptionalString(kwargs.title) ?? spec.title ?? '';
     const brand = toOptionalString(kwargs.brand) ?? spec.brand ?? '';
     const model = toOptionalString(kwargs.model) ?? spec.model ?? '';
@@ -913,8 +1515,20 @@ cli({
       throw new Error(`Upload did not reach a confirmed AI state: ${upload.outcome.detail}`);
     }
 
-    let state = await advanceAiToPublish(page);
-    const profile = detectCategoryProfile(state);
+    const desiredProfile = detectDesiredCategoryProfile({ category, title, model });
+    let state = await ensureAiCategoryReviewPage(page);
+    if (desiredProfile && state.isAiPage && !matchesCategoryProfile(state, desiredProfile)) {
+      state = await ensureAiCategoryProfile(page, desiredProfile);
+    }
+
+    state = state.isPublishPage ? state : await advanceAiToPublish(page);
+    const profile = desiredProfile ?? detectCategoryProfile(state);
+    if (desiredProfile && !matchesCategoryProfile(state, desiredProfile)) {
+      throw new Error(
+        `Category verification failed after leaving the AI page. ` +
+        `Expected ${desiredProfile.label}, got ${state.categoryPath ?? state.catId ?? 'n/a'}`,
+      );
+    }
 
     await setTextInput(page, ['#sell-field-title input', 'input[placeholder*="最多允许输入30个汉字"]'], title, '宝贝标题');
     await selectComboboxOption(page, '#sell-field-p-20000', brand, '品牌', brand, ['input[name="p-20000~1"]']);
