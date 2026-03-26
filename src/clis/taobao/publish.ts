@@ -8,6 +8,8 @@ import { uploadLocalImages } from './common.js';
 
 const DEFAULT_UPLOAD_WAIT_SECONDS = 20;
 const DEFAULT_SUCCESS_WAIT_SECONDS = 30;
+const HUMANIZED_DELAY_MIN_SECONDS = 1.2;
+const HUMANIZED_DELAY_MAX_SECONDS = 3.8;
 
 type PublishInput = {
   imagePath?: string;
@@ -60,6 +62,18 @@ type CategoryProfile = {
   defaultAge?: string;
 };
 
+async function waitForHumanizedDelay(
+  page: IPage,
+  minSeconds = HUMANIZED_DELAY_MIN_SECONDS,
+  maxSeconds = HUMANIZED_DELAY_MAX_SECONDS,
+): Promise<number> {
+  const lower = Math.max(0, minSeconds);
+  const upper = Math.max(lower, maxSeconds);
+  const seconds = Number((lower + Math.random() * (upper - lower)).toFixed(3));
+  await page.wait({ time: seconds });
+  return seconds;
+}
+
 const CATEGORY_PROFILES: CategoryProfile[] = [
   {
     key: 'plush',
@@ -67,6 +81,9 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     catIds: ['122676006'],
     pathHints: ['动漫毛绒', '毛绒'],
     inputHints: ['毛绒', 'plush'],
+    aiSearchKeyword: '毛绒',
+    aiTargetLeaf: '动漫毛绒/抱枕/坐垫',
+    aiTreePath: ['模玩/动漫/周边/娃圈三坑/桌游', '卡通/动漫周边', '动漫毛绒/抱枕/坐垫'],
     materialSelectors: ['input[name="p-20021"]'],
     characterSelectors: ['input[name="p-587451596"]'],
     workTitleSelectors: ['#sell-field-p-135924127 input[role="combobox"]'],
@@ -78,6 +95,9 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     catIds: ['50008406'],
     pathHints: ['手办', '手办景品'],
     inputHints: ['手办', 'figure', '景品'],
+    aiSearchKeyword: '手办',
+    aiTargetLeaf: '手办/手办景品',
+    aiTreePath: ['模玩/动漫/周边/娃圈三坑/桌游', '手办/兵人/扭蛋', '手办/手办景品'],
     materialSelectors: [],
     characterSelectors: ['#struct-p-135892197 input[role="combobox"]'],
     workTitleSelectors: ['#sell-field-p-135924127 input[role="combobox"]'],
@@ -134,6 +154,20 @@ function matchesCategoryProfile(state: PublishState, profile: CategoryProfile): 
     profile.pathHints.some((hint) => normalizedPath.includes(normalizeLower(hint)));
 }
 
+function matchCategoryProfileValue(value: unknown): CategoryProfile | null {
+  const normalized = normalizeLower(value);
+  const raw = normalizeText(value);
+  if (!normalized) return null;
+
+  return CATEGORY_PROFILES.find((profile) =>
+    normalizeLower(profile.key) === normalized ||
+    normalizeLower(profile.label) === normalized ||
+    profile.catIds.includes(raw) ||
+    profile.pathHints.some((hint) => normalized === normalizeLower(hint) || normalized.includes(normalizeLower(hint))) ||
+    profile.inputHints.some((hint) => normalized.includes(normalizeLower(hint)))
+  ) ?? null;
+}
+
 function detectCategoryProfile(state: PublishState): CategoryProfile {
   const profile = CATEGORY_PROFILES.find((candidate) => matchesCategoryProfile(state, candidate));
 
@@ -146,8 +180,10 @@ function detectCategoryProfile(state: PublishState): CategoryProfile {
 }
 
 function detectDesiredCategoryProfile(input: Pick<PublishInput, 'category' | 'title' | 'model'>): CategoryProfile | null {
+  const explicitCategory = matchCategoryProfileValue(input.category);
+  if (explicitCategory) return explicitCategory;
+
   const haystack = [
-    normalizeLower(input.category),
     normalizeLower(input.title),
     normalizeLower(input.model),
   ].filter(Boolean);
@@ -220,6 +256,47 @@ function pickBoolean(record: Record<string, unknown>, keys: string[]): boolean |
   return toOptionalBoolean(firstDefined(record, keys));
 }
 
+function firstDefinedFromRecords(
+  records: Array<Record<string, unknown> | null | undefined>,
+  keys: string[],
+): unknown {
+  for (const record of records) {
+    if (!record) continue;
+    const value = firstDefined(record, keys);
+    if (value !== undefined && value !== null) return value;
+  }
+  return undefined;
+}
+
+function pickStringFromRecords(
+  records: Array<Record<string, unknown> | null | undefined>,
+  keys: string[],
+): string | undefined {
+  return toOptionalString(firstDefinedFromRecords(records, keys));
+}
+
+function pickIntFromRecords(
+  records: Array<Record<string, unknown> | null | undefined>,
+  keys: string[],
+): number | undefined {
+  return toOptionalInt(firstDefinedFromRecords(records, keys));
+}
+
+function pickMinimumIntFromRecords(
+  records: Array<Record<string, unknown> | null | undefined>,
+  keys: string[],
+  min: number,
+): number | undefined {
+  return toOptionalMinimumInt(firstDefinedFromRecords(records, keys), min);
+}
+
+function pickBooleanFromRecords(
+  records: Array<Record<string, unknown> | null | undefined>,
+  keys: string[],
+): boolean | undefined {
+  return toOptionalBoolean(firstDefinedFromRecords(records, keys));
+}
+
 function loadPublishInput(specPath: string): PublishInput {
   const absPath = path.resolve(specPath);
   if (!fs.existsSync(absPath)) throw new Error(`Publish spec not found: ${absPath}`);
@@ -240,28 +317,35 @@ function loadPublishInput(specPath: string): PublishInput {
 
   const taobao = asObject(root.taobao);
   const scoped = asObject(taobao?.publish) ?? asObject(root.publish) ?? root;
+  const media = asObject(scoped.media);
+  const listing = asObject(scoped.listing);
+  const attributes = asObject(scoped.attributes);
+  const fulfillment = asObject(scoped.fulfillment);
+  const inventory = asObject(scoped.inventory);
+  const pricing = asObject(scoped.pricing);
+  const records = [scoped, media, listing, attributes, fulfillment, inventory, pricing];
 
-  const imagePath = pickString(scoped, ['image-path', 'image_path', 'imagePath', 'images', 'image']);
+  const imagePath = pickStringFromRecords(records, ['image-path', 'image_path', 'imagePath', 'images', 'image']);
 
   return {
     imagePath: imagePath
       ? (path.isAbsolute(imagePath) ? imagePath : path.resolve(path.dirname(absPath), imagePath))
       : undefined,
-    category: pickString(scoped, ['category', 'category-path', 'category_path', 'categoryPath']),
-    title: pickString(scoped, ['title']),
-    brand: pickString(scoped, ['brand']),
-    model: pickString(scoped, ['model']),
-    age: pickString(scoped, ['age', 'age-range', 'age_range', 'ageRange']),
-    material: pickString(scoped, ['material']),
-    character: pickString(scoped, ['character']),
-    workTitle: pickString(scoped, ['work-title', 'work_title', 'workTitle']),
-    region: pickString(scoped, ['region']),
-    price: pickString(scoped, ['price']),
-    stock: pickPositiveInt(scoped, ['stock']),
-    merchantCode: pickString(scoped, ['merchant-code', 'merchant_code', 'merchantCode']),
-    deliveryDays: toOptionalMinimumInt(firstDefined(scoped, ['delivery-days', 'delivery_days', 'deliveryDays']), 1),
-    wait: toOptionalMinimumInt(firstDefined(scoped, ['wait', 'wait-seconds', 'wait_seconds', 'waitSeconds']), 1),
-    submit: pickBoolean(scoped, ['submit']),
+    category: pickStringFromRecords(records, ['category', 'category-key', 'category_key', 'categoryKey', 'category-path', 'category_path', 'categoryPath']),
+    title: pickStringFromRecords(records, ['title']),
+    brand: pickStringFromRecords(records, ['brand']),
+    model: pickStringFromRecords(records, ['model']),
+    age: pickStringFromRecords(records, ['age', 'age-range', 'age_range', 'ageRange']),
+    material: pickStringFromRecords(records, ['material']),
+    character: pickStringFromRecords(records, ['character']),
+    workTitle: pickStringFromRecords(records, ['work-title', 'work_title', 'workTitle']),
+    region: pickStringFromRecords(records, ['region']),
+    price: pickStringFromRecords(records, ['price']),
+    stock: pickIntFromRecords(records, ['stock']),
+    merchantCode: pickStringFromRecords(records, ['merchant-code', 'merchant_code', 'merchantCode']),
+    deliveryDays: pickMinimumIntFromRecords(records, ['delivery-days', 'delivery_days', 'deliveryDays'], 1),
+    wait: pickMinimumIntFromRecords(records, ['wait', 'wait-seconds', 'wait_seconds', 'waitSeconds'], 1),
+    submit: pickBooleanFromRecords(records, ['submit']),
   };
 }
 
@@ -343,7 +427,7 @@ async function readPublishState(page: IPage): Promise<PublishState> {
 }
 
 async function clickVisibleAction(page: IPage, labels: string[], dialogOnly = false): Promise<{ clicked: boolean; label?: string }> {
-  return page.evaluate(`
+  const result = await page.evaluate(`
     (async () => {
       const labels = ${JSON.stringify(labels)};
       const dialogOnly = ${JSON.stringify(dialogOnly)};
@@ -393,6 +477,8 @@ async function clickVisibleAction(page: IPage, labels: string[], dialogOnly = fa
       return { clicked: false };
     })()
   `);
+  if (result?.clicked) await waitForHumanizedDelay(page);
+  return result;
 }
 
 async function clickAiNextButton(page: IPage): Promise<boolean> {
@@ -417,6 +503,7 @@ async function clickAiNextButton(page: IPage): Promise<boolean> {
       return { clicked: true };
     })()
   `);
+  if (result?.clicked) await waitForHumanizedDelay(page);
   return Boolean(result?.clicked);
 }
 
@@ -527,7 +614,10 @@ async function openAiCategorySearch(page: IPage): Promise<void> {
       })()
     `);
 
-    if (result?.clicked) break;
+    if (result?.clicked) {
+      await waitForHumanizedDelay(page);
+      break;
+    }
     if (attempt === 4) {
       throw new Error('Could not open the AI category search panel');
     }
@@ -608,9 +698,11 @@ async function waitForAiCategoryProfile(page: IPage, profile: CategoryProfile, t
 async function clickSnapshotRef(page: IPage, ref: string): Promise<void> {
   if (typeof page.nativeClick === 'function') {
     await page.nativeClick(ref);
+    await waitForHumanizedDelay(page);
     return;
   }
   await page.click(ref);
+  await waitForHumanizedDelay(page);
 }
 
 async function clickAiDialogHistoryCategory(page: IPage, label: string): Promise<boolean> {
@@ -638,6 +730,7 @@ async function clickAiDialogHistoryCategory(page: IPage, label: string): Promise
       return { ok: true };
     })()
   `);
+  if (result?.ok) await waitForHumanizedDelay(page);
   return Boolean(result?.ok);
 }
 
@@ -663,6 +756,7 @@ async function clickAiDialogCategoryLeaf(page: IPage, label: string): Promise<bo
       return { ok: true };
     })()
   `);
+  if (result?.ok) await waitForHumanizedDelay(page);
   return Boolean(result?.ok);
 }
 
@@ -686,6 +780,7 @@ async function clickAiDialogLastButton(page: IPage): Promise<boolean> {
       return { ok: true };
     })()
   `);
+  if (result?.ok) await waitForHumanizedDelay(page);
   return Boolean(result?.ok);
 }
 
@@ -708,6 +803,7 @@ async function clickAiCategoryDialogSearchButton(page: IPage): Promise<boolean> 
       return { ok: true };
     })()
   `);
+  if (result?.ok) await waitForHumanizedDelay(page);
   return Boolean(result?.ok);
 }
 
@@ -734,6 +830,11 @@ async function waitForAiDialogLeafSelected(page: IPage, label: string, timeoutSe
 async function clickAiCategorySelectionConfirm(page: IPage): Promise<boolean> {
   const result = await page.evaluate(`
     (() => {
+      const fireClick = (el) => {
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        el.click();
+      };
       const isVisible = (el) => {
         if (!el) return false;
         const style = window.getComputedStyle(el);
@@ -743,11 +844,26 @@ async function clickAiCategorySelectionConfirm(page: IPage): Promise<boolean> {
       };
       const target = document.querySelector('.sell-component-category-line-cat-dlg-btn button');
       if (!(target instanceof HTMLButtonElement) || !isVisible(target) || target.disabled) return { ok: false };
-      target.click();
+      fireClick(target);
       return { ok: true };
     })()
   `);
+  if (result?.ok) await waitForHumanizedDelay(page);
   return Boolean(result?.ok);
+}
+
+async function finalizeAiCategorySelection(page: IPage, profile: CategoryProfile, timeoutSeconds = 10): Promise<PublishState | null> {
+  const confirmed = await clickAiCategorySelectionConfirm(page) || await clickAiDialogLastButton(page);
+  if (!confirmed) return null;
+
+  await page.wait({ time: 0.8 });
+
+  const switchDialogVisible = await waitForAiCategorySwitchConfirm(page, 2);
+  if (switchDialogVisible) {
+    if (!await clickAiCategorySwitchConfirm(page)) return null;
+  }
+
+  return await waitForAiCategoryProfile(page, profile, timeoutSeconds);
 }
 
 async function waitForAiCategorySwitchConfirm(page: IPage, timeoutSeconds: number): Promise<boolean> {
@@ -796,6 +912,7 @@ async function clickAiCategorySwitchConfirm(page: IPage): Promise<boolean> {
       return { ok: true };
     })()
   `);
+  if (result?.ok) await waitForHumanizedDelay(page);
   return Boolean(result?.ok);
 }
 
@@ -807,36 +924,28 @@ async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): P
   await openAiCategorySearch(page);
 
   if (profile.aiSearchKeyword && profile.aiTargetLeaf) {
-    await setTextInput(
-      page,
-      ['[role="dialog"] input[placeholder*="类目搜索"]'],
-      profile.aiSearchKeyword,
-      '类目搜索',
-    );
-    if (!await clickAiCategoryDialogSearchButton(page)) {
-      throw new Error(`Could not click the category search button for ${profile.label}`);
-    }
-    await page.wait({ time: 2 });
+    try {
+      await setTextInput(
+        page,
+        ['[role="dialog"] input[placeholder*="类目搜索"]'],
+        profile.aiSearchKeyword,
+        '类目搜索',
+      );
+      if (await clickAiCategoryDialogSearchButton(page)) {
+        await page.wait({ time: 2 });
 
-    if (!await clickAiDialogCategoryLeaf(page, profile.aiTargetLeaf)) {
-      throw new Error(`Could not select ${profile.aiTargetLeaf} from the category search results`);
+        if (
+          await clickAiDialogCategoryLeaf(page, profile.aiTargetLeaf) &&
+          await waitForAiDialogLeafSelected(page, profile.aiTargetLeaf, 4) &&
+          true
+        ) {
+          const matched = await finalizeAiCategorySelection(page, profile, 10);
+          if (matched) return matched;
+        }
+      }
+    } catch {
+      // Fall through to the non-search-based category correction paths below.
     }
-    if (!await waitForAiDialogLeafSelected(page, profile.aiTargetLeaf, 4)) {
-      throw new Error(`The category dialog did not mark ${profile.aiTargetLeaf} as selected`);
-    }
-
-    if (!await clickAiCategorySelectionConfirm(page)) {
-      throw new Error(`Could not confirm ${profile.aiTargetLeaf} in the category selection dialog`);
-    }
-    if (!await waitForAiCategorySwitchConfirm(page, 4)) {
-      throw new Error(`The category switch confirmation dialog did not appear for ${profile.aiTargetLeaf}`);
-    }
-    if (!await clickAiCategorySwitchConfirm(page)) {
-      throw new Error(`Could not confirm the category switch for ${profile.aiTargetLeaf}`);
-    }
-
-    const matched = await waitForAiCategoryProfile(page, profile, 10);
-    if (matched) return matched;
   }
 
   const selectionRoots = [
@@ -852,12 +961,12 @@ async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): P
 
   if (profile.aiTargetLeaf) {
     if (await clickAiDialogHistoryCategory(page, profile.aiTargetLeaf)) {
-      const matched = await waitForAiCategoryProfile(page, profile, 6);
+      const matched = await finalizeAiCategorySelection(page, profile, 6) ?? await waitForAiCategoryProfile(page, profile, 6);
       if (matched) return matched;
     }
 
     if (await clickAiDialogCategoryLeaf(page, profile.aiTargetLeaf)) {
-      let matched = await waitForAiCategoryProfile(page, profile, 3);
+      let matched = await finalizeAiCategorySelection(page, profile, 6) ?? await waitForAiCategoryProfile(page, profile, 3);
       if (matched) return matched;
 
       if (await clickAiDialogLastButton(page)) {
@@ -870,7 +979,7 @@ async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): P
     const exactRef = findSnapshotRefByLabel(snapshot, profile.aiTargetLeaf);
     if (exactRef) {
       await clickSnapshotRef(page, exactRef);
-      const matched = await waitForAiCategoryProfile(page, profile, 8);
+      const matched = await finalizeAiCategorySelection(page, profile, 8) ?? await waitForAiCategoryProfile(page, profile, 8);
       if (matched) return matched;
     }
 
@@ -880,7 +989,7 @@ async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): P
       selectionRoots,
     );
     if (clicked.clicked) {
-      const matched = await waitForAiCategoryProfile(page, profile, 8);
+      const matched = await finalizeAiCategorySelection(page, profile, 8) ?? await waitForAiCategoryProfile(page, profile, 8);
       if (matched) return matched;
     }
   }
@@ -901,7 +1010,7 @@ async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): P
       await page.wait({ time: 2 });
       const clicked = await clickVisibleTextInRoots(page, [profile.aiTargetLeaf ?? profile.aiSearchKeyword], selectionRoots);
       if (clicked.clicked) {
-        const matched = await waitForAiCategoryProfile(page, profile, 8);
+        const matched = await finalizeAiCategorySelection(page, profile, 8) ?? await waitForAiCategoryProfile(page, profile, 8);
         if (matched) return matched;
       }
     }
@@ -921,7 +1030,7 @@ async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): P
       if (ref) {
         await clickSnapshotRef(page, ref);
         await page.wait({ time: 1.2 });
-        state = await readPublishState(page);
+        state = await finalizeAiCategorySelection(page, profile, 8) ?? await readPublishState(page);
         if (matchesCategoryProfile(state, profile)) return state;
         continue;
       }
@@ -933,7 +1042,7 @@ async function ensureAiCategoryProfile(page: IPage, profile: CategoryProfile): P
       );
       if (!clicked.clicked) continue;
       await page.wait({ time: 1.2 });
-      state = await readPublishState(page);
+      state = await finalizeAiCategorySelection(page, profile, 8) ?? await readPublishState(page);
       if (matchesCategoryProfile(state, profile)) return state;
     }
   }
@@ -1098,6 +1207,7 @@ async function setTextInput(
   if (!result?.ok) {
     throw new Error(`Failed to set ${fieldName}. Expected "${value}", got "${result?.actual ?? 'n/a'}"`);
   }
+  await waitForHumanizedDelay(page);
 }
 
 async function waitForVisibleSelector(page: IPage, selectors: string[], timeoutSeconds: number): Promise<boolean> {
@@ -1121,6 +1231,18 @@ async function waitForVisibleSelector(page: IPage, selectors: string[], timeoutS
     await page.wait({ time: 0.5 });
   }
   return false;
+}
+
+async function scrollToTop(page: IPage): Promise<void> {
+  await page.evaluate(`
+    (() => {
+      window.scrollTo(0, 0);
+      document.documentElement?.scrollTo?.(0, 0);
+      document.body?.scrollTo?.(0, 0);
+      return true;
+    })()
+  `);
+  await page.wait({ time: 0.8 });
 }
 
 async function readComboboxCommittedText(page: IPage, containerSelector: string): Promise<string> {
@@ -1230,6 +1352,7 @@ async function typeOverlaySearch(page: IPage, searchText: string): Promise<void>
   if (!result?.ok) {
     throw new Error(`Failed to type combobox search text "${searchText}". Current value: "${result?.actual ?? 'n/a'}"`);
   }
+  await waitForHumanizedDelay(page, 1.2, 2.8);
 }
 
 async function clickOverlayOption(page: IPage, optionText: string): Promise<boolean> {
@@ -1258,6 +1381,7 @@ async function clickOverlayOption(page: IPage, optionText: string): Promise<bool
     })()
   `);
 
+  if (result?.ok) await waitForHumanizedDelay(page);
   return Boolean(result?.ok);
 }
 
@@ -1283,7 +1407,10 @@ async function selectComboboxOption(
   await page.wait({ time: 0.8 });
 
   const committedAfter = (await readComboboxCommittedText(page, containerSelector)).toLowerCase();
-  if (committedAfter.includes(optionText.toLowerCase())) return;
+  if (committedAfter.includes(optionText.toLowerCase())) {
+    await waitForHumanizedDelay(page);
+    return;
+  }
 
   if (successSelectors.length > 0 && await waitForVisibleSelector(page, successSelectors, 2)) {
     return;
@@ -1375,6 +1502,7 @@ async function selectRadioByLabel(page: IPage, containerSelector: string, labelT
   if (!result?.ok) {
     throw new Error(`Failed to set ${fieldName} to "${labelText}". Current value: "${result?.current ?? 'n/a'}"`);
   }
+  await waitForHumanizedDelay(page);
 }
 
 async function setDeliveryDays(page: IPage, days: number): Promise<void> {
@@ -1510,9 +1638,18 @@ cli({
     if (!price) throw new Error('--price is required');
     if (!Number.isFinite(stock) || stock <= 0) throw new Error('--stock must be a positive integer');
 
-    const upload = await uploadLocalImages(page, imagePath, waitSeconds);
+    let upload = await uploadLocalImages(page, imagePath, waitSeconds);
     if (upload.outcome.status !== 'confirmed') {
-      throw new Error(`Upload did not reach a confirmed AI state: ${upload.outcome.detail}`);
+      await page.wait({ time: 2 });
+      upload = await uploadLocalImages(page, imagePath, Math.max(waitSeconds, 30));
+    }
+    if (upload.outcome.status !== 'confirmed') {
+      throw new Error(
+        `Upload did not reach a confirmed AI state: ${upload.outcome.detail}; ` +
+        `attempts=${upload.attemptSummary}; ` +
+        `uploadRequests=${upload.outcome.uploadRequestCount}; ` +
+        `placeholderRequests=${upload.outcome.placeholderRequestCount}`,
+      );
     }
 
     const desiredProfile = detectDesiredCategoryProfile({ category, title, model });
@@ -1530,7 +1667,11 @@ cli({
       );
     }
 
-    await setTextInput(page, ['#sell-field-title input', 'input[placeholder*="最多允许输入30个汉字"]'], title, '宝贝标题');
+    await scrollToTop(page);
+    if (!await waitForVisibleSelector(page, ['#sell-field-title input', 'input[placeholder*="30个汉字"]', 'input[placeholder*="60字符"]'], 10)) {
+      throw new Error('Publish page did not expose the 宝贝标题 input after scrolling to the top');
+    }
+    await setTextInput(page, ['#sell-field-title input', 'input[placeholder*="30个汉字"]', 'input[placeholder*="60字符"]'], title, '宝贝标题');
     await selectComboboxOption(page, '#sell-field-p-20000', brand, '品牌', brand, ['input[name="p-20000~1"]']);
     if (!await waitForVisibleSelector(page, ['input[name="p-20000~1"]'], 3)) {
       await setTextInput(page, ['#struct-p-20000 input[role="combobox"]'], brand, '品牌');
@@ -1547,7 +1688,8 @@ cli({
     await selectRadioByLabel(page, '#sell-field-startTime', '放入仓库', '上架时间');
     await ensureVisibleShelfMode(page, '放入仓库');
     await setDeliveryDays(page, deliveryDays);
-    await setTextInput(page, ['#sell-field-title input', 'input[placeholder*="最多允许输入30个汉字"]'], title, '宝贝标题');
+    await scrollToTop(page);
+    await setTextInput(page, ['#sell-field-title input', 'input[placeholder*="30个汉字"]', 'input[placeholder*="60字符"]'], title, '宝贝标题');
     await setTextInput(page, ['input[name="p-20000~1"]'], model, '型号');
     await setTextInput(page, ['#sell-field-price input[maxlength="15"]'], price, '一口价', 'numeric');
     await setTextInput(page, ['#struct-quantity input[maxlength="15"]'], String(stock), '总库存', 'numeric');

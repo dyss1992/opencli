@@ -4,6 +4,8 @@ import * as path from 'node:path';
 import type { IPage } from '../../types.js';
 
 export const TAOBAO_AI_UPLOAD_URL = 'https://item.upload.taobao.com/sell/ai/category.htm';
+const HUMANIZED_DELAY_MIN_SECONDS = 1.2;
+const HUMANIZED_DELAY_MAX_SECONDS = 3.8;
 
 export type ImagePayload = {
   absPath: string;
@@ -57,6 +59,18 @@ export type UploadExecution = {
   attemptSummary: string;
   fileNames: string[];
 };
+
+async function waitForHumanizedDelay(
+  page: IPage,
+  minSeconds = HUMANIZED_DELAY_MIN_SECONDS,
+  maxSeconds = HUMANIZED_DELAY_MAX_SECONDS,
+): Promise<number> {
+  const lower = Math.max(0, minSeconds);
+  const upper = Math.max(lower, maxSeconds);
+  const seconds = Number((lower + Math.random() * (upper - lower)).toFixed(3));
+  await page.wait({ time: seconds });
+  return seconds;
+}
 
 function toImagePayload(absPath: string): ImagePayload {
   const resolvedPath = path.resolve(absPath);
@@ -160,7 +174,7 @@ async function clickLocalUploadEntry(page: IPage): Promise<{ clicked: boolean; l
     })()
   `);
 
-  if (result?.clicked) await page.wait({ time: 1 });
+  if (result?.clicked) await waitForHumanizedDelay(page);
   return result ?? { clicked: false };
 }
 
@@ -441,10 +455,11 @@ async function waitForUploadOutcome(
   };
 }
 
-export async function uploadLocalImages(page: IPage, imagePath: string, waitSeconds = 20): Promise<UploadExecution> {
-  const input = readImageInput(imagePath);
-  const images = input.images;
-  const pageUrl = await ensureTaobaoUploadPage(page);
+async function runUploadAttemptSet(
+  page: IPage,
+  images: ImagePayload[],
+  waitSeconds: number,
+): Promise<{ attempts: UploadAttemptResult[]; outcome: UploadOutcome }> {
   const baseline = await measureSignals(page, images.map((image) => image.name));
   const networkBefore = await page.networkRequests(false);
   const baselineNetworkCount = Array.isArray(networkBefore) ? networkBefore.length : 0;
@@ -456,7 +471,7 @@ export async function uploadLocalImages(page: IPage, imagePath: string, waitSeco
     const result = await attempt();
     attempts.push(result);
     if (!result.ok) return false;
-    await page.wait({ time: 2 });
+    await waitForHumanizedDelay(page);
     const outcome = await waitForUploadOutcome(
       page,
       images.map((image) => image.name),
@@ -493,6 +508,64 @@ export async function uploadLocalImages(page: IPage, imagePath: string, waitSeco
     );
   }
 
+  return {
+    attempts,
+    outcome: finalOutcome ?? {
+      status: 'injected',
+      detail: 'Upload attempt finished without a reliable success marker',
+      uploadRequestCount: 0,
+      placeholderRequestCount: 0,
+      informationConfirmCount: 0,
+      qualifyQueryCount: 0,
+    },
+  };
+}
+
+export async function uploadLocalImages(page: IPage, imagePath: string, waitSeconds = 20): Promise<UploadExecution> {
+  const input = readImageInput(imagePath);
+  const images = input.images;
+  const pageUrl = await ensureTaobaoUploadPage(page);
+  const attempts: UploadAttemptResult[] = [];
+  let outcome: UploadOutcome;
+
+  const batch = await runUploadAttemptSet(page, images, waitSeconds);
+  attempts.push(...batch.attempts.map((attempt) => ({ ...attempt, method: `batch-${attempt.method}` })));
+  outcome = batch.outcome;
+
+  if (images.length > 1 && outcome.status !== 'confirmed') {
+    await ensureTaobaoUploadPage(page);
+    let sequentialFailure: { image: ImagePayload; outcome: UploadOutcome } | null = null;
+    let lastSequentialOutcome: UploadOutcome = outcome;
+
+    for (const image of images) {
+      const single = await runUploadAttemptSet(page, [image], waitSeconds);
+      attempts.push(
+        ...single.attempts.map((attempt) => ({
+          ...attempt,
+          method: `${image.name}:${attempt.method}`,
+        })),
+      );
+      lastSequentialOutcome = single.outcome;
+      if (single.outcome.status !== 'confirmed') {
+        sequentialFailure = { image, outcome: single.outcome };
+        break;
+      }
+      await waitForHumanizedDelay(page, 1.2, 2.6);
+    }
+
+    outcome = sequentialFailure
+      ? {
+          ...sequentialFailure.outcome,
+          detail:
+            `Sequential upload stopped at ${sequentialFailure.image.name}: ` +
+            `${sequentialFailure.outcome.detail}`,
+        }
+      : {
+          ...lastSequentialOutcome,
+          detail: `Sequential upload confirmed across ${images.length} files`,
+        };
+  }
+
   if (!attempts.some((item) => item.ok)) {
     const screenshotPath = '/tmp/taobao_upload_local_debug.png';
     await page.screenshot({ path: screenshotPath });
@@ -502,15 +575,6 @@ export async function uploadLocalImages(page: IPage, imagePath: string, waitSeco
       `Debug screenshot: ${screenshotPath}`,
     );
   }
-
-  const outcome = finalOutcome ?? {
-    status: 'injected' as const,
-    detail: 'Upload attempt finished without a reliable success marker',
-    uploadRequestCount: 0,
-    placeholderRequestCount: 0,
-    informationConfirmCount: 0,
-    qualifyQueryCount: 0,
-  };
 
   return {
     input,
