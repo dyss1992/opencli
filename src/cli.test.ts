@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -1102,6 +1102,9 @@ describe('profile list', () => {
 describe('browser tab targeting commands', () => {
   const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const originalCacheDir = process.env.OPENCLI_CACHE_DIR;
+  const originalConfigDir = process.env.OPENCLI_CONFIG_DIR;
+  const originalProfile = process.env.OPENCLI_PROFILE;
 
   function getBrowserStateFile(cacheDir: string, session: string = 'test'): string {
     return path.join(cacheDir, 'browser-state', `${session}.json`);
@@ -1110,6 +1113,8 @@ describe('browser tab targeting commands', () => {
   beforeEach(() => {
     process.exitCode = undefined;
     process.env.OPENCLI_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'opencli-browser-tab-state-'));
+    process.env.OPENCLI_CONFIG_DIR = process.env.OPENCLI_CACHE_DIR;
+    delete process.env.OPENCLI_PROFILE;
     consoleLogSpy.mockClear();
     stderrSpy.mockClear();
     mockBrowserConnect.mockClear();
@@ -1158,6 +1163,15 @@ describe('browser tab targeting commands', () => {
       }),
       session: 'test',
     } as unknown as IPage;
+  });
+
+  afterEach(() => {
+    if (originalCacheDir === undefined) delete process.env.OPENCLI_CACHE_DIR;
+    else process.env.OPENCLI_CACHE_DIR = originalCacheDir;
+    if (originalConfigDir === undefined) delete process.env.OPENCLI_CONFIG_DIR;
+    else process.env.OPENCLI_CONFIG_DIR = originalConfigDir;
+    if (originalProfile === undefined) delete process.env.OPENCLI_PROFILE;
+    else process.env.OPENCLI_PROFILE = originalProfile;
   });
 
   function lastJsonLog(): any {

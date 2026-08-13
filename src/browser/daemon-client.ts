@@ -12,6 +12,7 @@ import { profileRouteParams, resolveProfileSelection } from './profile.js';
 import { DEFAULT_BROWSER_CONNECT_TIMEOUT } from './config.js';
 import { ensureBrowserBridgeReady } from './daemon-lifecycle.js';
 import { isPreDispatchError } from './bridge-readiness.js';
+import { resolveBrowserTabPlacementFromEnv, type BrowserTabPlacement } from './tab-placement.js';
 import {
   fetchDaemonStatus,
   getDaemonHealth,
@@ -118,7 +119,7 @@ function isPreConnectFetchError(err: unknown): boolean {
 
 export interface DaemonCommand {
   id: string;
-  action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'set-file-input' | 'insert-text' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'wait-download' | 'cdp' | 'frames';
+  action: 'health' | 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'set-file-input' | 'insert-text' | 'credential-fill' | 'credential-autofill' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'wait-download' | 'cdp' | 'frames';
   /** Target page identity (targetId). Cross-layer contract with the extension. */
   page?: string;
   code?: string;
@@ -144,6 +145,14 @@ export interface DaemonCommand {
   selector?: string;
   /** Raw text payload for insert-text action */
   text?: string;
+  username?: string;
+  password?: string;
+  allowedHosts?: string[];
+  usernameSelectors?: string[];
+  passwordSelectors?: string[];
+  activateTextPatterns?: string[];
+  submitSelectors?: string[];
+  submit?: boolean;
   /** URL substring filter pattern for network capture */
   pattern?: string;
   /** Download wait timeout in milliseconds */
@@ -152,6 +161,8 @@ export interface DaemonCommand {
   cdpParams?: Record<string, unknown>;
   /** Window foreground/background policy for owned Browser Bridge containers. */
   windowMode?: 'foreground' | 'background';
+  /** Tab placement policy for Browser Bridge owned sessions. */
+  tabPlacement?: BrowserTabPlacement;
   /** Custom idle timeout in seconds for this session. Overrides the default. */
   idleTimeout?: number;
   /** Frame index for cross-frame operations (0-based, from 'frames' action) */
@@ -246,6 +257,7 @@ async function sendCommandRaw(
   const contextId = routing.contextId;
   const preferredContextId = routing.preferredContextId;
   const windowMode = params.windowMode ?? envWindowMode;
+  const tabPlacement = params.tabPlacement ?? resolveBrowserTabPlacementFromEnv();
 
   let id = generateId();
   let ensureUsed = false;
@@ -285,6 +297,7 @@ async function sendCommandRaw(
       ...(contextId && { contextId }),
       ...(preferredContextId && { preferredContextId }),
       ...(windowMode && { windowMode }),
+      tabPlacement,
     };
     try {
       const res = await requestDaemon('/command', {

@@ -72,6 +72,38 @@ describe('Page.getCurrentUrl', () => {
       page: 'page-1',
     }));
   });
+
+  it('rejects commands after closeWindow so delayed work cannot recreate a tab', async () => {
+    sendCommandMock.mockResolvedValueOnce({ closed: true });
+    const page = new Page('site:taobao', undefined, undefined, undefined, 'adapter', 'ephemeral', undefined, 'existing-window');
+
+    await page.closeWindow();
+
+    await expect(page.evaluate('document.title')).rejects.toThrow('Browser page is closed');
+    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandMock).toHaveBeenCalledWith('close-window', expect.objectContaining({
+      session: 'site:taobao',
+      surface: 'adapter',
+      tabPlacement: 'existing-window',
+    }));
+  });
+
+  it('tracks the page created by network capture for later navigation', async () => {
+    sendCommandFullMock
+      .mockResolvedValueOnce({ data: { started: true }, page: 'page-capture' })
+      .mockResolvedValueOnce({ data: { url: 'https://item.upload.taobao.com/' }, page: 'page-capture' });
+    sendCommandMock.mockResolvedValueOnce(null);
+    const page = new Page('site:taobao', undefined, undefined, undefined, 'adapter', 'ephemeral', undefined, 'existing-window');
+
+    await expect(page.startNetworkCapture()).resolves.toBe(true);
+    await page.goto('https://item.upload.taobao.com/sell/v2/publish.htm?catId=50008406', { waitUntil: 'none' });
+
+    expect(page.getActivePage()).toBe('page-capture');
+    expect(sendCommandFullMock).toHaveBeenNthCalledWith(2, 'navigate', expect.objectContaining({
+      page: 'page-capture',
+      tabPlacement: 'existing-window',
+    }));
+  });
 });
 
 describe('Page.evaluate', () => {
@@ -141,17 +173,17 @@ describe('Page network capture compatibility', () => {
   });
 
   it('treats unknown network-capture-start as unsupported and memoizes it', async () => {
-    sendCommandMock.mockRejectedValueOnce(new Error('Unknown action: network-capture-start'));
+    sendCommandFullMock.mockRejectedValueOnce(new Error('Unknown action: network-capture-start'));
 
     const page = new Page('notebooklm', undefined, undefined, undefined, 'adapter');
 
     await expect(page.startNetworkCapture()).resolves.toBe(false);
     await expect(page.startNetworkCapture()).resolves.toBe(false);
 
-    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(1);
     expect(warnMock).toHaveBeenCalledTimes(1);
     expect(warnMock).toHaveBeenCalledWith(expect.stringContaining('does not support network capture'));
-    expect(sendCommandMock).toHaveBeenCalledWith('network-capture-start', expect.objectContaining({
+    expect(sendCommandFullMock).toHaveBeenCalledWith('network-capture-start', expect.objectContaining({
       session: 'notebooklm',
       surface: 'adapter',
     }));
@@ -174,19 +206,18 @@ describe('Page network capture compatibility', () => {
   });
 
   it('rethrows unrelated network capture failures', async () => {
-    sendCommandMock.mockRejectedValueOnce(new Error('Extension disconnected'));
+    sendCommandFullMock.mockRejectedValueOnce(new Error('Extension disconnected'));
 
     const page = new Page('notebooklm', undefined, undefined, undefined, 'adapter');
 
     await expect(page.startNetworkCapture()).rejects.toThrow('Extension disconnected');
-    expect(sendCommandMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(1);
     expect(warnMock).not.toHaveBeenCalled();
   });
 
   it('warns only once even if both start and read hit the compatibility fallback', async () => {
-    sendCommandMock
-      .mockRejectedValueOnce(new Error('Unknown action: network-capture-start'))
-      .mockRejectedValueOnce(new Error('Unknown action: network-capture-read'));
+    sendCommandFullMock.mockRejectedValueOnce(new Error('Unknown action: network-capture-start'));
+    sendCommandMock.mockRejectedValueOnce(new Error('Unknown action: network-capture-read'));
 
     const page = new Page('notebooklm', undefined, undefined, undefined, 'adapter');
 
@@ -194,6 +225,42 @@ describe('Page network capture compatibility', () => {
     await expect(page.readNetworkCapture()).resolves.toEqual([]);
 
     expect(warnMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Page credential fill', () => {
+  beforeEach(() => {
+    sendCommandMock.mockReset();
+    sendCommandFullMock.mockReset();
+    warnMock.mockReset();
+  });
+
+  it('uses the dedicated command and retains profile and placement scope', async () => {
+    sendCommandMock.mockResolvedValueOnce({
+      ok: true,
+      host: 'login.taobao.com',
+      username_filled: true,
+      password_filled: true,
+      submitted: false,
+    });
+    const page = new Page('qn', undefined, 'gumo-studio', undefined, 'adapter', 'persistent', undefined, 'existing-window');
+
+    const result = await page.fillCredentials({
+      username: 'seller',
+      password: 'secret-password',
+      allowedHosts: ['taobao.com'],
+      submit: false,
+    });
+
+    expect(result.password_filled).toBe(true);
+    expect(sendCommandMock).toHaveBeenCalledWith('credential-fill', expect.objectContaining({
+      session: 'qn',
+      surface: 'adapter',
+      contextId: 'gumo-studio',
+      siteSession: 'persistent',
+      tabPlacement: 'existing-window',
+      password: 'secret-password',
+    }));
   });
 });
 

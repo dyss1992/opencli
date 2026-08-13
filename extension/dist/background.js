@@ -1,5 +1,5 @@
 const DAEMON_PORT = 19825;
-const DAEMON_HOST = "localhost";
+const DAEMON_HOST = "127.0.0.1";
 const DAEMON_WS_URL = `ws://${DAEMON_HOST}:${DAEMON_PORT}/ext`;
 const DAEMON_PING_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}/ping`;
 
@@ -104,6 +104,10 @@ async function ensureAttached(tabId, aggressiveRetry = false) {
   attached.add(tabId);
   try {
     await sendDebuggerCommand({ tabId }, "Runtime.enable");
+  } catch {
+  }
+  try {
+    await sendDebuggerCommand({ tabId }, "Page.enable");
   } catch {
   }
   if (preservedNetworkCapture) {
@@ -540,9 +544,22 @@ function registerListeners() {
   chrome.debugger.onEvent.addListener(async (source, method, params) => {
     const tabId = source.tabId;
     if (!tabId) return;
+    const eventParams = params;
+    if (method === "Page.javascriptDialogOpening" && eventParams?.type === "beforeunload") {
+      try {
+        await sendDebuggerCommand(
+          { tabId },
+          "Page.handleJavaScriptDialog",
+          { accept: true },
+          CDP_PROBE_TIMEOUT_MS
+        );
+      } catch (err) {
+        console.warn(`[opencli] Failed to auto-accept beforeunload dialog for tab ${tabId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
     const state = networkCaptures.get(tabId);
     if (!state) return;
-    const eventParams = params;
     if (method === "Network.requestWillBeSent") {
       const requestId = String(eventParams?.requestId || "");
       const request = eventParams?.request;
@@ -735,6 +752,329 @@ async function executeWithJournal(cmd, execute) {
   }
 }
 
+async function credentialFillInFrame(request) {
+  const host = window.location.hostname;
+  const normalizeHost = (value) => value.trim().toLowerCase().replace(/^\.+/, "");
+  const normalizedHost = normalizeHost(host);
+  const allowed = request.allowedHosts.some((entry) => {
+    const allowedHost = normalizeHost(entry);
+    return allowedHost.length > 0 && (normalizedHost === allowedHost || normalizedHost.endsWith(`.${allowedHost}`));
+  });
+  if (!allowed) {
+    return {
+      ok: false,
+      host,
+      username_filled: false,
+      password_filled: false,
+      submitted: false,
+      reason: "host_not_allowed"
+    };
+  }
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+  const isVisible = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0 && !element.hasAttribute("disabled");
+  };
+  const queryFirstVisibleInput = (selectors) => {
+    for (const selector of selectors) {
+      let elements = [];
+      try {
+        elements = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      const found = elements.find(
+        (element) => (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) && isVisible(element) && !element.readOnly
+      );
+      if (found) return found;
+    }
+    return null;
+  };
+  const textOf = (element) => clean([
+    element.innerText,
+    element.getAttribute("aria-label"),
+    element.getAttribute("title"),
+    element.getAttribute("placeholder"),
+    element instanceof HTMLInputElement ? element.value : ""
+  ].filter(Boolean).join(" "));
+  const matchesActivationText = (text) => request.activateTextPatterns.some((pattern) => {
+    try {
+      return new RegExp(pattern).test(text);
+    } catch {
+      return text === pattern || text.includes(pattern);
+    }
+  });
+  const activateLoginMode = () => {
+    const candidates = Array.from(document.querySelectorAll("button, a, input, div, span")).filter(isVisible);
+    const target = candidates.find((element) => matchesActivationText(textOf(element)));
+    if (!target) return false;
+    target.click();
+    return true;
+  };
+  const inputEvent = (type, value) => {
+    try {
+      return new InputEvent(type, { bubbles: true, cancelable: false, inputType: "insertText", data: value });
+    } catch {
+      return new Event(type, { bubbles: true, cancelable: false });
+    }
+  };
+  const dispatchLegacyEvent = (field, eventName) => {
+    const event = field.ownerDocument.createEvent("Event");
+    event.initEvent(eventName, true, false);
+    field.dispatchEvent(event);
+  };
+  const setValue = async (field, value) => {
+    field.focus();
+    await Promise.resolve();
+    field.dispatchEvent(new FocusEvent("focus", { bubbles: false, cancelable: false }));
+    field.dispatchEvent(new FocusEvent("focusin", { bubbles: true, cancelable: false }));
+    field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: false, key: value }));
+    field.dispatchEvent(inputEvent("beforeinput", value));
+    field.dispatchEvent(new KeyboardEvent("keypress", { bubbles: true, cancelable: false, key: value }));
+    const descriptor = Object.getOwnPropertyDescriptor(
+      field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+      "value"
+    );
+    if (descriptor?.set) descriptor.set.call(field, value);
+    else field.value = value;
+    field.dispatchEvent(new Event("input", { bubbles: true, cancelable: false }));
+    field.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, cancelable: false, key: value }));
+    field.dispatchEvent(new Event("change", { bubbles: true, cancelable: false }));
+    dispatchLegacyEvent(field, "input");
+    dispatchLegacyEvent(field, "change");
+  };
+  const findSubmitTarget = (usernameInput2, passwordInput2) => {
+    for (const selector of request.submitSelectors) {
+      let elements = [];
+      try {
+        elements = Array.from(document.querySelectorAll(selector));
+      } catch {
+        continue;
+      }
+      const found = elements.find((element) => {
+        if (!isVisible(element)) return false;
+        return /^(登录|登 录|提交|确认|继续)$/.test(textOf(element)) || element.getAttribute("type") === "submit";
+      });
+      if (found) return found;
+    }
+    return passwordInput2?.form?.querySelector('button[type="submit"], input[type="submit"]') ?? usernameInput2?.form?.querySelector('button[type="submit"], input[type="submit"]') ?? null;
+  };
+  let usernameInput = queryFirstVisibleInput(request.usernameSelectors);
+  let passwordInput = queryFirstVisibleInput(request.passwordSelectors);
+  if ((!usernameInput || !passwordInput) && activateLoginMode()) {
+    await delay(500);
+    usernameInput = queryFirstVisibleInput(request.usernameSelectors);
+    passwordInput = queryFirstVisibleInput(request.passwordSelectors);
+  }
+  if (!usernameInput || !passwordInput) {
+    return {
+      ok: false,
+      host,
+      username_filled: false,
+      password_filled: false,
+      submitted: false,
+      reason: "login_inputs_not_found"
+    };
+  }
+  await setValue(usernameInput, request.username);
+  await setValue(passwordInput, request.password);
+  let submitted = false;
+  if (request.submit) {
+    const submitTarget = findSubmitTarget(usernameInput, passwordInput);
+    if (submitTarget) {
+      submitTarget.click();
+      submitted = true;
+    } else if (passwordInput.form && typeof passwordInput.form.requestSubmit === "function") {
+      passwordInput.form.requestSubmit();
+      submitted = true;
+    }
+  }
+  return {
+    ok: true,
+    host,
+    username_filled: clean(usernameInput.value).length > 0,
+    password_filled: clean(passwordInput.value).length > 0,
+    submitted,
+    reason: ""
+  };
+}
+
+const DEFAULT_USERNAME_SELECTORS = [
+  "#fm-login-id",
+  'input[name="fm-login-id"]',
+  'input[autocomplete="username"]',
+  'input[type="email"]',
+  'input[type="text"]'
+];
+const DEFAULT_PASSWORD_SELECTORS = [
+  "#fm-login-password",
+  'input[name="fm-login-password"]',
+  'input[autocomplete="current-password"]',
+  'input[type="password"]'
+];
+const DEFAULT_LOGIN_ACTIVATION_TEXT = ["账号密码登录", "密码登录", "账号登录"];
+const DEFAULT_SUBMIT_SELECTORS = ['button[type="submit"]', 'input[type="submit"]', "button", "a"];
+function cleanStringArray(value, fallback) {
+  if (!Array.isArray(value)) return [...fallback];
+  const cleaned = value.filter((entry) => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean);
+  return cleaned.length > 0 ? cleaned : [...fallback];
+}
+function normalizeCredentialFillRequest(value, defaultSubmit = true) {
+  if (!value || typeof value !== "object") return null;
+  const record = value;
+  if (typeof record.username !== "string" || typeof record.password !== "string") return null;
+  const allowedHosts = cleanStringArray(record.allowedHosts, []);
+  if (allowedHosts.length === 0) return null;
+  return {
+    username: record.username,
+    password: record.password,
+    allowedHosts,
+    usernameSelectors: cleanStringArray(record.usernameSelectors, DEFAULT_USERNAME_SELECTORS),
+    passwordSelectors: cleanStringArray(record.passwordSelectors, DEFAULT_PASSWORD_SELECTORS),
+    activateTextPatterns: cleanStringArray(record.activateTextPatterns, DEFAULT_LOGIN_ACTIVATION_TEXT),
+    submitSelectors: cleanStringArray(record.submitSelectors, DEFAULT_SUBMIT_SELECTORS),
+    submit: typeof record.submit === "boolean" ? record.submit : defaultSubmit
+  };
+}
+function isCredentialFillFrameResult(value) {
+  if (!value || typeof value !== "object") return false;
+  const record = value;
+  return typeof record.ok === "boolean" && typeof record.host === "string" && typeof record.username_filled === "boolean" && typeof record.password_filled === "boolean" && typeof record.submitted === "boolean";
+}
+async function runCredentialFillOnTab(tabId, request) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    world: "MAIN",
+    func: credentialFillInFrame,
+    args: [request]
+  });
+  const frameResults = results.map((entry) => ({ frameId: entry.frameId, result: entry.result })).filter(
+    (entry) => typeof entry.frameId === "number" && isCredentialFillFrameResult(entry.result)
+  );
+  return frameResults.find((entry) => entry.result.ok) ?? frameResults.find((entry) => entry.result.reason !== "host_not_allowed") ?? frameResults[0] ?? null;
+}
+
+const CANDIDATE_HOSTS = [
+  "login.taobao.com",
+  "loginmyseller.taobao.com",
+  "havanalogin.taobao.com"
+];
+const REQUEST_TIMEOUT_MS = 2500;
+const ATTEMPT_TTL_MS = 2e4;
+const RETRY_DELAYS_MS = [0, 400, 1200, 2500];
+function isResponse(value) {
+  if (!value || typeof value !== "object") return false;
+  const record = value;
+  return record.type === "autofill-response" && typeof record.requestId === "string" && typeof record.ok === "boolean";
+}
+function isCandidateUrl(rawUrl) {
+  if (!rawUrl) return false;
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    return CANDIDATE_HOSTS.some((candidate) => host === candidate || host.endsWith(`.${candidate}`));
+  } catch {
+    return false;
+  }
+}
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function createPassiveAutofill(dependencies) {
+  let requestCounter = 0;
+  const pending = /* @__PURE__ */ new Map();
+  const recentAttempts = /* @__PURE__ */ new Map();
+  function handleDaemonMessage(value) {
+    if (!isResponse(value)) return false;
+    const request = pending.get(value.requestId);
+    if (!request) return true;
+    clearTimeout(request.timer);
+    pending.delete(value.requestId);
+    const credential = value.ok ? normalizeCredentialFillRequest(value.credential, false) : null;
+    request.resolve(credential ? { ...credential, submit: false } : null);
+    return true;
+  }
+  async function waitForSocket() {
+    await dependencies.connect();
+    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (dependencies.isSocketOpen()) return true;
+      await delay(100);
+    }
+    return dependencies.isSocketOpen();
+  }
+  async function requestCredential(rawUrl) {
+    if (!await waitForSocket()) return null;
+    const requestId = `autofill_${Date.now()}_${++requestCounter}`;
+    const contextId = await dependencies.getContextId();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pending.delete(requestId);
+        resolve(null);
+      }, REQUEST_TIMEOUT_MS);
+      pending.set(requestId, { resolve, timer });
+      if (dependencies.send({ type: "autofill-request", requestId, contextId, url: rawUrl })) return;
+      clearTimeout(timer);
+      pending.delete(requestId);
+      resolve(null);
+    });
+  }
+  async function fillTab(tabId, rawUrl) {
+    const credential = await requestCredential(rawUrl);
+    if (!credential) return;
+    for (const delayMs of RETRY_DELAYS_MS) {
+      if (delayMs > 0) await delay(delayMs);
+      try {
+        const selected = await runCredentialFillOnTab(tabId, credential);
+        if (selected?.result.ok) return;
+        const reason = selected?.result.reason;
+        if (reason && reason !== "login_inputs_not_found" && reason !== "host_not_allowed") return;
+      } catch {
+        return;
+      }
+    }
+  }
+  async function triggerForTab(tabId, rawUrl, options = {}) {
+    if (!isCandidateUrl(rawUrl)) return;
+    const now = Date.now();
+    for (const [key2, timestamp] of recentAttempts) {
+      if (now - timestamp > ATTEMPT_TTL_MS * 3) recentAttempts.delete(key2);
+    }
+    const key = `${tabId}
+${rawUrl}`;
+    if (!options.bypassRecent && now - (recentAttempts.get(key) ?? 0) < ATTEMPT_TTL_MS) return;
+    recentAttempts.set(key, now);
+    await fillTab(tabId, rawUrl);
+  }
+  function scheduleForTab(tabId, rawUrl) {
+    void triggerForTab(tabId, rawUrl);
+  }
+  function registerListeners() {
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (changeInfo.status === "complete" || changeInfo.url) {
+        scheduleForTab(tabId, changeInfo.url ?? tab.url);
+      }
+    });
+    chrome.webNavigation?.onCommitted?.addListener(
+      (details) => scheduleForTab(details.tabId, details.url),
+      { url: CANDIDATE_HOSTS.map((hostEquals) => ({ hostEquals })) }
+    );
+    chrome.webNavigation?.onCompleted?.addListener(
+      (details) => scheduleForTab(details.tabId, details.url),
+      { url: CANDIDATE_HOSTS.map((hostEquals) => ({ hostEquals })) }
+    );
+  }
+  async function scanOpenTabs() {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (typeof tab.id === "number") scheduleForTab(tab.id, tab.url);
+    }
+  }
+  return { handleDaemonMessage, registerListeners, scanOpenTabs, scheduleForTab, triggerForTab };
+}
+
 let ws = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -802,6 +1142,12 @@ function safeSend(socket, payload) {
     return false;
   }
 }
+const passiveAutofill = createPassiveAutofill({
+  connect,
+  getContextId: getCurrentContextId,
+  isSocketOpen: () => ws?.readyState === WebSocket.OPEN,
+  send: (payload) => safeSend(ws, payload)
+});
 console.log = (...args) => {
   _origLog(...args);
   forwardLog("info", args);
@@ -869,7 +1215,9 @@ async function connectAttempt() {
   thisWs.onmessage = async (event) => {
     if (ws !== thisWs) return;
     try {
-      const command = JSON.parse(event.data);
+      const payload = JSON.parse(event.data);
+      if (passiveAutofill.handleDaemonMessage(payload)) return;
+      const command = payload;
       const result = await executeWithJournal(command, handleCommand);
       const target = ws && ws.readyState === WebSocket.OPEN ? ws : thisWs;
       safeSend(target, result);
@@ -1006,6 +1354,12 @@ function getWindowRole(key, ownership) {
 function getWindowMode(key) {
   return sessionOverrides.get(key)?.windowMode ?? (getOwnedWindowRole(key) === "interactive" ? "foreground" : "background");
 }
+function getTabPlacement(key) {
+  return sessionOverrides.get(key)?.tabPlacement ?? automationSessions.get(key)?.tabPlacement ?? "owned-container";
+}
+function usesOwnedContainer(key) {
+  return getTabPlacement(key) === "owned-container";
+}
 function makeAlarmName(leaseKey) {
   return `${LEASE_IDLE_ALARM_PREFIX}${encodeURIComponent(leaseKey)}`;
 }
@@ -1029,7 +1383,8 @@ function makeSession(key, session) {
     contextId: currentContextId,
     ownership,
     lifecycle: getLeaseLifecycle(key, session.kind),
-    windowRole: getWindowRole(key, ownership)
+    windowRole: getWindowRole(key, ownership),
+    tabPlacement: session.tabPlacement ?? getTabPlacement(key)
   };
 }
 function emptyRegistry() {
@@ -1096,6 +1451,7 @@ async function persistRuntimeState() {
       ownership: session.ownership,
       lifecycle: session.lifecycle,
       windowRole: session.windowRole,
+      tabPlacement: session.tabPlacement,
       idleDeadlineAt: session.idleDeadlineAt,
       updatedAt: Date.now()
     };
@@ -1455,10 +1811,56 @@ function initialTabIsAvailable(tabId) {
   }
   return true;
 }
+function isNormalChromeWindow(win) {
+  return typeof win?.id === "number" && (win.type === void 0 || win.type === "normal");
+}
+async function selectExistingNormalWindow(mode) {
+  const windowsApi = chrome.windows;
+  try {
+    const focused = await windowsApi.getLastFocused?.({ windowTypes: ["normal"] });
+    if (isNormalChromeWindow(focused)) {
+      await focusOwnedWindowIfRequested(focused.id, mode);
+      return focused.id;
+    }
+  } catch {
+  }
+  const windows = typeof windowsApi.query === "function" ? await windowsApi.query({ windowTypes: ["normal"] }).catch(() => []) : [];
+  const selected = windows.filter(isNormalChromeWindow).sort((a, b) => {
+    if (!!a.focused !== !!b.focused) return a.focused ? -1 : 1;
+    return a.id - b.id;
+  })[0];
+  if (!selected) {
+    throw new CommandFailure(
+      "existing_window_required",
+      "No normal Chrome window is open for this Browser Bridge profile.",
+      "Open the target Chrome profile window first, then retry the command."
+    );
+  }
+  await focusOwnedWindowIfRequested(selected.id, mode);
+  return selected.id;
+}
+async function createExistingWindowTabLease(leaseKey, initialUrl) {
+  const targetUrl = initialUrl && isSafeNavigationUrl(initialUrl) ? initialUrl : BLANK_PAGE;
+  const windowId = await selectExistingNormalWindow(getWindowMode(leaseKey));
+  const tab = await chrome.tabs.create({ windowId, url: targetUrl, active: true });
+  if (tab.id === void 0) throw new Error("Failed to create tab in existing Chrome window");
+  setLeaseSession(leaseKey, {
+    session: getSessionFromKey(leaseKey),
+    surface: getSurfaceFromKey(leaseKey),
+    kind: "owned",
+    windowId,
+    owned: true,
+    preferredTabId: tab.id,
+    tabPlacement: "existing-window"
+  });
+  resetWindowIdleTimer(leaseKey);
+  return { tabId: tab.id, tab };
+}
 async function createOwnedTabLease(leaseKey, initialUrl) {
   return withLeaseMutation(() => createOwnedTabLeaseUnlocked(leaseKey, initialUrl));
 }
 async function createOwnedTabLeaseUnlocked(leaseKey, initialUrl) {
+  if (!usesOwnedContainer(leaseKey)) return createExistingWindowTabLease(leaseKey, initialUrl);
   const targetUrl = initialUrl && isSafeNavigationUrl(initialUrl) ? initialUrl : BLANK_PAGE;
   const role = getOwnedWindowRole(leaseKey);
   const { windowId, initialTabId } = await ensureOwnedContainerWindow(role, targetUrl, getWindowMode(leaseKey));
@@ -1484,7 +1886,8 @@ async function createOwnedTabLeaseUnlocked(leaseKey, initialUrl) {
     kind: "owned",
     windowId: sessionWindowId,
     owned: true,
-    preferredTabId: tabId
+    preferredTabId: tabId,
+    tabPlacement: "owned-container"
   });
   resetWindowIdleTimer(leaseKey);
   return { tabId, tab };
@@ -1510,6 +1913,9 @@ async function getAutomationWindow(leaseKey, initialUrl) {
     } catch {
       await removeLeaseSession(leaseKey);
     }
+  }
+  if (!usesOwnedContainer(leaseKey)) {
+    return selectExistingNormalWindow(getWindowMode(leaseKey));
   }
   const role = getOwnedWindowRole(leaseKey);
   return (await ensureOwnedContainerWindow(role, initialUrl, getWindowMode(leaseKey))).windowId;
@@ -1550,6 +1956,7 @@ function initialize() {
   if (initialized) return;
   initialized = true;
   chrome.alarms.create("keepalive", { periodInMinutes: 0.5 });
+  passiveAutofill.registerListeners();
   registerListeners();
   try {
     const registerFrameTracking$1 = registerFrameTracking;
@@ -1560,6 +1967,7 @@ function initialize() {
     await getCurrentContextId();
     await reconcileTargetLeaseRegistry();
     await connect();
+    await passiveAutofill.scanOpenTabs();
   })();
   console.log("[opencli] OpenCLI extension initialized");
 }
@@ -1580,7 +1988,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
   await releaseLease(leaseKey, "idle alarm");
 });
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type === "autofill-page-ready") {
+    const tabId = sender.tab?.id;
+    const rawUrl = typeof msg.url === "string" ? msg.url : sender.url;
+    if (typeof tabId === "number") passiveAutofill.scheduleForTab(tabId, rawUrl);
+    sendResponse({ ok: true });
+    return false;
+  }
   if (msg?.type === "getStatus") {
     void (async () => {
       const contextId = await getCurrentContextId();
@@ -1614,11 +2029,22 @@ async function fetchDaemonVersion() {
   }
 }
 async function handleCommand(cmd) {
+  if (cmd.action === "health") {
+    return { id: cmd.id, ok: true, data: { healthy: true } };
+  }
   const session = getSessionName(cmd.session);
   const surface = getCommandSurface(cmd);
   const leaseKey = getLeaseKey(session, surface);
+  const requestedExistingWindowPlacement = cmd.tabPlacement === "existing-window";
   if (cmd.windowMode === "foreground" || cmd.windowMode === "background") {
     setSessionOverride(leaseKey, { windowMode: cmd.windowMode });
+  }
+  if (cmd.tabPlacement === "owned-container" || cmd.tabPlacement === "existing-window") {
+    setSessionOverride(leaseKey, { tabPlacement: cmd.tabPlacement });
+  }
+  if (requestedExistingWindowPlacement) {
+    await releaseOwnedContainerSessionsForSurface(surface, "tab placement changed");
+    setSessionOverride(leaseKey, { tabPlacement: "existing-window" });
   }
   if (surface === "adapter" && (cmd.siteSession === "persistent" || cmd.siteSession === "ephemeral")) {
     setSessionOverride(leaseKey, { lifecycle: cmd.siteSession });
@@ -1648,6 +2074,9 @@ async function handleCommand(cmd) {
         return await handleSetFileInput(cmd, leaseKey);
       case "insert-text":
         return await handleInsertText(cmd, leaseKey);
+      case "credential-fill":
+      case "credential-autofill":
+        return await handleCredentialFill(cmd, leaseKey, cmd.action === "credential-fill");
       case "bind":
         return await handleBind(cmd, leaseKey);
       case "network-capture-start":
@@ -1743,6 +2172,10 @@ async function resolveCommandTabId(cmd) {
 }
 async function resolveTab(tabId, leaseKey, initialUrl) {
   const existingSession = automationSessions.get(leaseKey);
+  if (existingSession?.owned && existingSession.tabPlacement !== getTabPlacement(leaseKey)) {
+    await releaseLease(leaseKey, "tab placement changed");
+    return createOwnedTabLease(leaseKey, initialUrl);
+  }
   if (tabId !== void 0) {
     try {
       const tab = await chrome.tabs.get(tabId);
@@ -1796,6 +2229,10 @@ async function resolveTab(tabId, leaseKey, initialUrl) {
           'Switch the tab to an http(s) page or run "opencli browser bind" on another tab.'
         );
       }
+      if (session.tabPlacement === "existing-window") {
+        await releaseLease(leaseKey, "non-debuggable tab");
+        return createOwnedTabLease(leaseKey, initialUrl);
+      }
     } catch (err) {
       if (err instanceof CommandFailure) throw err;
       await removeLeaseSession(leaseKey);
@@ -1814,7 +2251,7 @@ async function resolveTab(tabId, leaseKey, initialUrl) {
   }
   const windowId = await getAutomationWindow(leaseKey, initialUrl);
   const role = getOwnedWindowRole(leaseKey);
-  const group = existingSession?.owned ? await ensureOwnedContainerGroup(role, windowId, []) : null;
+  const group = existingSession?.owned && usesOwnedContainer(leaseKey) ? await ensureOwnedContainerGroup(role, windowId, []) : null;
   const scopedWindowId = group?.windowId ?? windowId;
   const reusableTabId = await findReusableOwnedContainerTab(scopedWindowId, existingSession?.owned ? group?.id ?? null : void 0);
   if (reusableTabId !== void 0) return { tabId: reusableTabId, tab: await chrome.tabs.get(reusableTabId) };
@@ -1832,7 +2269,9 @@ async function resolveTab(tabId, leaseKey, initialUrl) {
   }
   const newTab = await chrome.tabs.create({ windowId: scopedWindowId, url: BLANK_PAGE, active: true });
   if (!newTab.id) throw new Error("Failed to create tab in automation container");
-  await ensureOwnedContainerGroup(role, scopedWindowId, [newTab.id]);
+  if (usesOwnedContainer(leaseKey)) {
+    await ensureOwnedContainerGroup(role, scopedWindowId, [newTab.id]);
+  }
   return { tabId: newTab.id, tab: await chrome.tabs.get(newTab.id) };
 }
 async function pageScopedResult(id, tabId, data) {
@@ -2026,7 +2465,7 @@ async function handleTabs(cmd, leaseKey) {
       let tab = await chrome.tabs.create({ windowId, url: cmd.url ?? BLANK_PAGE, active: true });
       const tabId = tab.id;
       if (!tabId) return { id: cmd.id, ok: false, error: "Failed to create tab" };
-      const group = await ensureOwnedContainerGroup(getOwnedWindowRole(leaseKey), windowId, [tabId]);
+      const group = usesOwnedContainer(leaseKey) ? await ensureOwnedContainerGroup(getOwnedWindowRole(leaseKey), windowId, [tabId]) : null;
       const sessionWindowId = group?.windowId ?? tab.windowId;
       if (tab.windowId !== sessionWindowId) tab = await chrome.tabs.get(tabId);
       setLeaseSession(leaseKey, {
@@ -2035,7 +2474,8 @@ async function handleTabs(cmd, leaseKey) {
         kind: "owned",
         windowId: sessionWindowId,
         owned: true,
-        preferredTabId: tabId
+        preferredTabId: tabId,
+        tabPlacement: getTabPlacement(leaseKey)
       });
       resetWindowIdleTimer(leaseKey);
       return pageScopedResult(cmd.id, tabId, { url: tab.url });
@@ -2218,6 +2658,27 @@ async function handleInsertText(cmd, leaseKey) {
     return errorResult(cmd.id, err);
   }
 }
+async function handleCredentialFill(cmd, leaseKey, defaultSubmit) {
+  const request = normalizeCredentialFillRequest(cmd, defaultSubmit);
+  if (!request) return { id: cmd.id, ok: false, error: "Missing or invalid credential payload" };
+  if (!defaultSubmit) request.submit = false;
+  const cmdTabId = await resolveCommandTabId(cmd);
+  const tabId = await resolveTabId(cmdTabId, leaseKey);
+  try {
+    const selected = await runCredentialFillOnTab(tabId, request);
+    const data = selected ? { ...selected.result, frameId: selected.frameId } : {
+      ok: false,
+      host: "",
+      username_filled: false,
+      password_filled: false,
+      submitted: false,
+      reason: "no_frame_result"
+    };
+    return pageScopedResult(cmd.id, tabId, data);
+  } catch (err) {
+    return errorResult(cmd.id, err);
+  }
+}
 async function handleNetworkCaptureStart(cmd, leaseKey) {
   const cmdTabId = await resolveCommandTabId(cmd);
   const tabId = await resolveTabId(cmdTabId, leaseKey);
@@ -2246,6 +2707,38 @@ async function handleWaitDownload(cmd) {
     return errorResult(cmd.id, err);
   }
 }
+async function releaseOwnedContainerSessionsForSurface(surface, reason) {
+  const staleLeaseKeys = [...automationSessions.entries()].filter(
+    ([leaseKey, session]) => session.surface === surface && session.owned && session.tabPlacement === "owned-container" && (activeCommandCounts.get(leaseKey) ?? 0) === 0
+  ).map(([leaseKey]) => leaseKey);
+  for (const staleLeaseKey of staleLeaseKeys) {
+    setSessionOverride(staleLeaseKey, { tabPlacement: "existing-window" });
+    await releaseLease(staleLeaseKey, reason);
+  }
+  await closeEmptyOwnedContainerWindowForSurface(surface);
+}
+async function closeEmptyOwnedContainerWindowForSurface(surface) {
+  const role = surface === "browser" ? "interactive" : "automation";
+  const container = ownedContainers[role];
+  const windowId = container.windowId;
+  if (windowId === null) return;
+  try {
+    const tabs = await chrome.tabs.query({ windowId });
+    const hasNonBlankTab = tabs.some((tab) => {
+      const url = tab.url ?? "";
+      return url !== "" && url !== BLANK_PAGE;
+    });
+    if (hasNonBlankTab) return;
+    await chrome.windows.remove(windowId);
+    container.windowId = null;
+    container.groupId = null;
+    await persistRuntimeState();
+  } catch {
+    container.windowId = null;
+    container.groupId = null;
+    await persistRuntimeState();
+  }
+}
 async function releaseLease(leaseKey, reason = "released") {
   const session = automationSessions.get(leaseKey);
   if (!session) {
@@ -2256,6 +2749,8 @@ async function releaseLease(leaseKey, reason = "released") {
   }
   if (session.idleTimer) clearTimeout(session.idleTimer);
   scheduleIdleAlarm(leaseKey, IDLE_TIMEOUT_NONE);
+  const releasePlacement = sessionOverrides.get(leaseKey)?.tabPlacement ?? session.tabPlacement;
+  const shouldRemoveOwnedTab = session.tabPlacement === "existing-window" || releasePlacement === "existing-window" || reason === "tab placement changed";
   if (session.owned) {
     const tabId = session.preferredTabId;
     if (tabId !== null) {
@@ -2268,10 +2763,14 @@ async function releaseLease(leaseKey, reason = "released") {
         await chrome.tabs.remove(tabId).catch(() => {
         });
         console.log(`[opencli] Released owned tab lease ${tabId} (session=${session.session}, surface=${session.surface}, ${reason})`);
+      } else if (shouldRemoveOwnedTab) {
+        await chrome.tabs.remove(tabId).catch(() => {
+        });
+        console.log(`[opencli] Released existing-window tab lease ${tabId} (session=${session.session}, surface=${session.surface}, ${reason})`);
       } else {
         try {
           const tab = await chrome.tabs.update(tabId, { url: BLANK_PAGE, active: true });
-          const group = await ensureOwnedContainerGroup(getOwnedWindowRole(leaseKey), session.windowId, [tab.id ?? tabId]);
+          const group = releasePlacement === "owned-container" ? await ensureOwnedContainerGroup(getOwnedWindowRole(leaseKey), session.windowId, [tab.id ?? tabId]) : null;
           if (group) session.windowId = group.windowId;
           console.log(`[opencli] Released owned tab lease ${tabId} as reusable placeholder (session=${session.session}, surface=${session.surface}, ${reason})`);
         } catch {
@@ -2322,7 +2821,8 @@ async function reconcileTargetLeaseRegistry() {
         kind: stored.kind === "bound" || stored.owned === false ? "bound" : "owned",
         windowId: tab.windowId,
         owned: stored.owned,
-        preferredTabId: tabId
+        preferredTabId: tabId,
+        tabPlacement: stored.tabPlacement === "existing-window" ? "existing-window" : "owned-container"
       });
       const timeout = getIdleTimeout(leaseKey);
       automationSessions.set(leaseKey, {
@@ -2330,7 +2830,7 @@ async function reconcileTargetLeaseRegistry() {
         idleTimer: null,
         idleDeadlineAt: stored.idleDeadlineAt
       });
-      if (session.owned) {
+      if (session.owned && session.tabPlacement === "owned-container") {
         const role = getOwnedWindowRole(leaseKey);
         if (ownedContainers[role].windowId === null) ownedContainers[role].windowId = tab.windowId;
         const group = await ensureOwnedContainerGroup(role, tab.windowId, [tabId]);

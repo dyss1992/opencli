@@ -207,6 +207,11 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
   } catch {
     // Some pages may not need explicit enable
   }
+  try {
+    await sendDebuggerCommand({ tabId }, 'Page.enable');
+  } catch {
+    // Dialog events are best-effort; other CDP operations remain usable.
+  }
 
   // Restore network capture that the re-attach (detach + onDetach) tore down.
   // The detach always disables the CDP Network domain, so re-enable it and put
@@ -801,9 +806,22 @@ export function registerListeners(): void {
   chrome.debugger.onEvent.addListener(async (source, method, params) => {
     const tabId = source.tabId;
     if (!tabId) return;
+    const eventParams = params as Record<string, any> | undefined;
+    if (method === 'Page.javascriptDialogOpening' && eventParams?.type === 'beforeunload') {
+      try {
+        await sendDebuggerCommand(
+          { tabId },
+          'Page.handleJavaScriptDialog',
+          { accept: true },
+          CDP_PROBE_TIMEOUT_MS,
+        );
+      } catch (err) {
+        console.warn(`[opencli] Failed to auto-accept beforeunload dialog for tab ${tabId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
     const state = networkCaptures.get(tabId);
     if (!state) return;
-    const eventParams = params as Record<string, any> | undefined;
 
     if (method === 'Network.requestWillBeSent') {
       const requestId = String(eventParams?.requestId || '');

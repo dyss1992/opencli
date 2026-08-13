@@ -151,6 +151,26 @@ describe('daemon-client', () => {
     expect(vi.mocked(fetch).mock.calls[0][0]).toMatch(/\/status\?contextId=work$/);
   });
 
+  it('fetchDaemonStatus includes a preferred default profile without making it strict', async () => {
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        ok: true,
+        pid: 1,
+        uptime: 0,
+        extensionConnected: true,
+        pending: 0,
+        memoryMB: 1,
+        port: 19825,
+      }),
+    } as Response);
+
+    await fetchDaemonStatus({ preferredContextId: 'work profile' });
+
+    const requested = new URL(String(vi.mocked(fetch).mock.calls[0][0]));
+    expect(requested.searchParams.get('preferredContextId')).toBe('work profile');
+  });
+
   it('rejects OPENCLI_DAEMON_PORT so CLI and extension cannot split bridge ports', async () => {
     vi.resetModules();
     vi.stubEnv('OPENCLI_DAEMON_PORT', '19999');
@@ -255,6 +275,25 @@ describe('daemon-client', () => {
     } finally {
       fs.rmSync(configDir, { recursive: true, force: true });
     }
+  });
+
+  it('sendCommand defaults to existing-window tab placement without changing command identity or deadlines', async () => {
+    vi.stubEnv('OPENCLI_TAB_PLACEMENT', '');
+    vi.mocked(fetch).mockResolvedValue({
+      status: 200,
+      json: () => Promise.resolve({ id: 'server', ok: true, data: 'ok' }),
+    } as Response);
+
+    await sendCommand('exec', { code: '1 + 1' });
+
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)) as {
+      id?: string;
+      deadlineAt?: number;
+      tabPlacement?: string;
+    };
+    expect(body.id).toMatch(/^cmd_/);
+    expect(body.deadlineAt).toEqual(expect.any(Number));
+    expect(body.tabPlacement).toBe('existing-window');
   });
 
   it('sendCommand uses explicit windowMode before OPENCLI_WINDOW env fallback', async () => {

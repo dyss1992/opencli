@@ -5,19 +5,17 @@
  */
 
 import { DEFAULT_DAEMON_PORT } from './constants.js';
-import { BrowserBridge } from './browser/index.js';
-import { setDaemonCommandTimeoutSeconds } from './browser/daemon-client.js';
+import { sendCommand, setDaemonCommandTimeoutSeconds } from './browser/daemon-client.js';
 import { getDaemonHealth } from './browser/daemon-transport.js';
 import { getErrorMessage } from './errors.js';
 import { getRuntimeLabel } from './runtime-detect.js';
 import { getCachedLatestExtensionVersion } from './update-check.js';
 import type { BrowserProfileStatus } from './browser/daemon-transport.js';
-import { aliasForContextId, loadProfileConfig } from './browser/profile.js';
+import { aliasForContextId, loadProfileConfig, profileRouteParams, resolveProfileSelection } from './browser/profile.js';
 import { formatDaemonVersion, isDaemonStale, staleDaemonIssue } from './browser/daemon-version.js';
 import { findShadowedUserAdapters, formatAdapterShadowIssue, type AdapterShadow } from './adapter-shadow.js';
 
 const DOCTOR_LIVE_TIMEOUT_SECONDS = 8;
-const DOCTOR_SESSION = '__doctor__';
 
 /** Parse a semver string into [major, minor, patch]. Returns null on invalid input. */
 function parseSemver(v: string): [number, number, number] | null {
@@ -76,28 +74,23 @@ export type DoctorReport = {
 };
 
 /**
- * Test connectivity by attempting a real browser command.
+ * Test the complete daemon-to-extension command transport without touching a page.
  */
-export async function checkConnectivity(opts?: { timeout?: number }): Promise<ConnectivityResult> {
+export async function checkConnectivity(opts?: {
+  timeout?: number;
+  contextId?: string;
+  preferredContextId?: string;
+}): Promise<ConnectivityResult> {
   const start = Date.now();
   const timeoutSeconds = opts?.timeout ?? DOCTOR_LIVE_TIMEOUT_SECONDS;
   // This is a health probe: shrink the transport's per-command deadline so a
   // hung daemon/extension fails the check in seconds, not the default 120s.
   setDaemonCommandTimeoutSeconds(timeoutSeconds);
   try {
-    const bridge = new BrowserBridge();
-    const page = await bridge.connect({
-      timeout: timeoutSeconds,
-      session: DOCTOR_SESSION,
-      surface: 'browser',
+    await sendCommand('health', {
+      ...(opts?.contextId ? { contextId: opts.contextId } : {}),
+      ...(opts?.preferredContextId ? { preferredContextId: opts.preferredContextId } : {}),
     });
-    try {
-      // Try a simple eval to verify end-to-end connectivity.
-      await page.evaluate('1 + 1');
-      await page.closeWindow?.();
-    } finally {
-      await bridge.close();
-    }
     return { ok: true, durationMs: Date.now() - start };
   } catch (err) {
     return { ok: false, error: getErrorMessage(err), durationMs: Date.now() - start };
@@ -107,12 +100,10 @@ export async function checkConnectivity(opts?: { timeout?: number }): Promise<Co
 }
 
 export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
-  // Live connectivity check is the core of doctor — it doubles as auto-start
-  // (bridge.connect spawns daemon) and validates end-to-end browser bridge health.
-  const connectivity = await checkConnectivity();
-
-  // Single status read *after* connectivity side-effects settle.
-  const health = await getDaemonHealth();
+  const profileSelection = resolveProfileSelection();
+  const healthOpts = profileSelection ? profileRouteParams(profileSelection) : undefined;
+  const connectivity = await checkConnectivity({ ...healthOpts });
+  const health = await getDaemonHealth(healthOpts);
   const daemonRunning = health.state !== 'stopped';
   const extensionConnected = health.state === 'ready';
   const daemonFlaky = connectivity.ok && !daemonRunning;

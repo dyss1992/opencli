@@ -1,11 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockGetDaemonHealth, mockConnect, mockClose, mockFindShadowedUserAdapters } = vi.hoisted(() => ({
+const {
+  mockGetDaemonHealth,
+  mockSendCommand,
+  mockSetDaemonCommandTimeoutSeconds,
+  mockFindShadowedUserAdapters,
+  mockResolveProfileSelection,
+} = vi.hoisted(() => ({
   mockGetDaemonHealth: vi.fn(),
-  mockConnect: vi.fn(),
-  mockClose: vi.fn(),
+  mockSendCommand: vi.fn(),
+  mockSetDaemonCommandTimeoutSeconds: vi.fn(),
   mockFindShadowedUserAdapters: vi.fn(),
+  mockResolveProfileSelection: vi.fn(),
 }));
+
+vi.mock('./browser/daemon-client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./browser/daemon-client.js')>();
+  return {
+    ...actual,
+    sendCommand: mockSendCommand,
+    setDaemonCommandTimeoutSeconds: mockSetDaemonCommandTimeoutSeconds,
+  };
+});
 
 vi.mock('./browser/daemon-transport.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./browser/daemon-transport.js')>();
@@ -15,18 +31,19 @@ vi.mock('./browser/daemon-transport.js', async (importOriginal) => {
   };
 });
 
-vi.mock('./browser/index.js', () => ({
-  BrowserBridge: class {
-    connect = mockConnect;
-    close = mockClose;
-  },
-}));
-
 vi.mock('./adapter-shadow.js', async () => {
   const actual = await vi.importActual<typeof import('./adapter-shadow.js')>('./adapter-shadow.js');
   return {
     ...actual,
     findShadowedUserAdapters: mockFindShadowedUserAdapters,
+  };
+});
+
+vi.mock('./browser/profile.js', async () => {
+  const actual = await vi.importActual<typeof import('./browser/profile.js')>('./browser/profile.js');
+  return {
+    ...actual,
+    resolveProfileSelection: mockResolveProfileSelection,
   };
 });
 
@@ -36,14 +53,10 @@ describe('doctor report rendering', () => {
   const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockFindShadowedUserAdapters.mockReturnValue([]);
-    // Doctor always runs live connectivity. Tests that want connect to fail override.
-    mockConnect.mockResolvedValue({
-      evaluate: vi.fn().mockResolvedValue(2),
-      closeWindow: vi.fn().mockResolvedValue(undefined),
-    });
-    mockClose.mockResolvedValue(undefined);
+    mockSendCommand.mockResolvedValue({ healthy: true });
+    mockResolveProfileSelection.mockReturnValue(undefined);
   });
 
   it('renders OK-style report when daemon and extension connected', () => {
@@ -168,7 +181,7 @@ describe('doctor report rendering', () => {
   });
 
   it('reports daemon not running when connectivity fails and daemon stays stopped', async () => {
-    mockConnect.mockRejectedValueOnce(new Error('Could not start daemon'));
+    mockSendCommand.mockRejectedValueOnce(new Error('Could not start daemon'));
     mockGetDaemonHealth.mockResolvedValueOnce({ state: 'stopped', status: null });
 
     const report = await runBrowserDoctor();
@@ -191,6 +204,7 @@ describe('doctor report rendering', () => {
       JSON.stringify({ version: 1, aliases: { work: 'zvypsyje' }, defaultContextId: 'zvypsyje' }),
     );
     vi.stubEnv('OPENCLI_CONFIG_DIR', configDir);
+    mockResolveProfileSelection.mockReturnValue({ contextId: 'zvypsyje', source: 'preferred' });
     try {
       mockGetDaemonHealth.mockResolvedValueOnce({
         state: 'ready',
@@ -239,24 +253,52 @@ describe('doctor report rendering', () => {
     ]));
   });
 
-  it('uses the fast default timeout for live connectivity checks', async () => {
-    let timeoutSeen: number | undefined;
-    const closeWindow = vi.fn().mockResolvedValue(undefined);
-    mockConnect.mockImplementationOnce(async (opts?: { timeout?: number; session?: string; surface?: string }) => {
-      timeoutSeen = opts?.timeout;
-      expect(opts?.session).toBe('__doctor__');
-      expect(opts?.surface).toBe('browser');
-      return {
-        evaluate: vi.fn().mockResolvedValue(2),
-        closeWindow,
-      };
+  it('uses the fast default timeout for the extension transport health command', async () => {
+    mockGetDaemonHealth.mockResolvedValueOnce({
+      state: 'ready',
+      status: { extensionConnected: true, extensionVersion: '1.0.23' },
     });
-    mockGetDaemonHealth.mockResolvedValueOnce({ state: 'ready', status: { extensionConnected: true } });
 
     await runBrowserDoctor();
 
-    expect(timeoutSeen).toBe(8);
-    expect(closeWindow).toHaveBeenCalledTimes(1);
+    expect(mockSetDaemonCommandTimeoutSeconds.mock.calls).toEqual([[8], [null]]);
+    expect(mockSendCommand).toHaveBeenCalledWith('health', {});
+  });
+
+  it('routes the health command to the selected preferred profile', async () => {
+    mockResolveProfileSelection.mockReturnValue({ contextId: 'work', source: 'preferred' });
+    mockGetDaemonHealth.mockResolvedValueOnce({
+      state: 'ready',
+      status: {
+        contextId: 'work',
+        extensionConnected: true,
+        extensionVersion: '1.0.23',
+      },
+    });
+
+    const report = await runBrowserDoctor();
+
+    expect(mockGetDaemonHealth).toHaveBeenCalledWith({ preferredContextId: 'work' });
+    expect(mockSendCommand).toHaveBeenCalledWith('health', { preferredContextId: 'work' });
+    expect(report.connectivity?.ok).toBe(true);
+    expect(report.extensionConnected).toBe(true);
+  });
+
+  it('routes the health command strictly to an explicitly selected profile', async () => {
+    mockResolveProfileSelection.mockReturnValue({ contextId: 'work', source: 'explicit' });
+    mockGetDaemonHealth.mockResolvedValueOnce({
+      state: 'ready',
+      status: {
+        contextId: 'work',
+        extensionConnected: true,
+        extensionVersion: '1.0.23',
+      },
+    });
+
+    await runBrowserDoctor();
+
+    expect(mockSendCommand).toHaveBeenCalledWith('health', { contextId: 'work' });
+    expect(mockGetDaemonHealth).toHaveBeenCalledWith({ contextId: 'work' });
   });
 
   it('reports an issue when the extension is connected but does not report a version', async () => {
@@ -334,9 +376,7 @@ describe('doctor report rendering', () => {
       },
     };
     mockGetDaemonHealth.mockResolvedValue(status);
-    // Real connectivity would fail in profile-required state; force it here so
-    // the test exercises the profile-required issue path, not the flaky path.
-    mockConnect.mockRejectedValueOnce(new Error('profile required'));
+    mockSendCommand.mockRejectedValueOnce(new Error('profile required'));
 
     const report = await runBrowserDoctor();
 

@@ -67,6 +67,27 @@ export interface FetchJsonOptions {
   timeoutMs?: number;
 }
 
+export interface BrowserCredentialFillOptions {
+  username: string;
+  password: string;
+  allowedHosts: string[];
+  usernameSelectors?: string[];
+  passwordSelectors?: string[];
+  activateTextPatterns?: string[];
+  submitSelectors?: string[];
+  submit?: boolean;
+}
+
+export interface BrowserCredentialFillResult {
+  ok: boolean;
+  host: string;
+  frameId?: number;
+  username_filled: boolean;
+  password_filled: boolean;
+  submitted: boolean;
+  reason?: string;
+}
+
 export type BrowserEvaluateFunction<Args extends unknown[] = unknown[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
 
 export interface IPage {
@@ -131,6 +152,8 @@ export interface IPage {
    * Useful for rich editors that ignore synthetic DOM value/text mutations.
    */
   insertText?(text: string): Promise<void>;
+  /** Fill login credentials without returning secret values. */
+  fillCredentials?(options: BrowserCredentialFillOptions): Promise<BrowserCredentialFillResult>;
   closeWindow?(): Promise<void>;
   /** Returns the current page URL, or null if unavailable. */
   getCurrentUrl?(): Promise<string | null>;
@@ -148,6 +171,8 @@ export interface IPage {
   evaluateInFrame?(js: string, frameIndex: number): Promise<unknown>;
   /** Click at native coordinates via CDP Input.dispatchMouseEvent. */
   nativeClick?(x: number, y: number): Promise<void>;
+  /** Click at page viewport coordinates via the operating-system mouse. */
+  systemClick?(x: number, y: number): Promise<void>;
   /** Type text via CDP Input.insertText. */
   nativeType?(text: string): Promise<void>;
   /** Press a key via CDP Input.dispatchKeyEvent. */

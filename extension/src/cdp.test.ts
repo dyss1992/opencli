@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+type DebuggerEventListener = (
+  source: { tabId?: number },
+  method: string,
+  params: Record<string, any>,
+) => void | Promise<void>;
+
 function createChromeMock() {
   const debuggerEventListeners: Array<(source: { tabId?: number }, method: string, params: any) => void> = [];
   const tabRemovedListeners: Array<(tabId: number) => void> = [];
@@ -61,6 +67,41 @@ describe('cdp attach recovery', () => {
     expect(result).toBe('ok');
     expect(debuggerApi.attach).toHaveBeenCalledTimes(1);
     expect(scripting.executeScript).not.toHaveBeenCalled();
+  });
+
+  it('enables page events after attaching so native dialogs can be observed', async () => {
+    const { chrome, debuggerApi } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./cdp');
+    await mod.evaluate(1, '1');
+
+    expect(debuggerApi.sendCommand).toHaveBeenCalledWith(
+      { tabId: 1 },
+      'Page.enable',
+    );
+  });
+
+  it('auto-accepts beforeunload dialogs from Chrome', async () => {
+    const { chrome, debuggerApi, debuggerEventListeners } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+
+    const mod = await import('./cdp');
+    mod.registerListeners();
+
+    for (const listener of debuggerEventListeners) {
+      await listener(
+        { tabId: 1 },
+        'Page.javascriptDialogOpening',
+        { type: 'beforeunload', message: 'Changes you made may not be saved.' },
+      );
+    }
+
+    expect(debuggerApi.sendCommand).toHaveBeenCalledWith(
+      { tabId: 1 },
+      'Page.handleJavaScriptDialog',
+      { accept: true },
+    );
   });
 
   it('uses the default execution context for a frame when isolated worlds also exist', async () => {
@@ -476,24 +517,24 @@ describe('cdp network capture correctness', () => {
   });
 
   function createNetworkMock() {
-    const onEventListeners = [];
+    const onEventListeners: DebuggerEventListener[] = [];
     const debuggerApi = {
       attach: vi.fn(async () => {}),
       detach: vi.fn(async () => {}),
-      sendCommand: vi.fn(async (_target, method, params) => {
+      sendCommand: vi.fn(async (_target: unknown, method: string, params?: Record<string, any>) => {
         if (method === 'Runtime.evaluate' && params?.expression === '1') return { result: { value: '1' } };
         if (method === 'Network.getRequestPostData') return {}; // no override; use inline postData
         return {};
       }),
       onDetach: { addListener: vi.fn() },
-      onEvent: { addListener: vi.fn((fn) => { onEventListeners.push(fn); }) },
+      onEvent: { addListener: vi.fn((fn: DebuggerEventListener) => { onEventListeners.push(fn); }) },
     };
     const tabs = {
       get: vi.fn(async () => ({ id: 1, windowId: 1, url: 'https://x.com/home' })),
       onRemoved: { addListener: vi.fn() },
       onUpdated: { addListener: vi.fn() },
     };
-    const fire = async (method, params) => {
+    const fire = async (method: string, params: Record<string, any>) => {
       for (const fn of onEventListeners) await fn({ tabId: 1 }, method, params);
     };
     return {
@@ -563,11 +604,11 @@ describe('cdp evaluateInFrame stale context fallback', () => {
   });
 
   it('falls back to the frame target when the cached context id went stale', async () => {
-    const debuggerEventListeners = [];
+    const debuggerEventListeners: DebuggerEventListener[] = [];
     const debuggerApi = {
       attach: vi.fn(async () => {}),
       detach: vi.fn(async () => {}),
-      sendCommand: vi.fn(async (target, method, params) => {
+      sendCommand: vi.fn(async (target: { targetId?: string }, method: string, params?: Record<string, any>) => {
         if (method === 'Runtime.enable') return {};
         // The cached context id is stale after the frame navigated: CDP rejects.
         if (method === 'Runtime.evaluate' && params?.contextId === 99) {
@@ -584,7 +625,7 @@ describe('cdp evaluateInFrame stale context fallback', () => {
         return {};
       }),
       onDetach: { addListener: vi.fn() },
-      onEvent: { addListener: vi.fn((fn) => { debuggerEventListeners.push(fn); }) },
+      onEvent: { addListener: vi.fn((fn: DebuggerEventListener) => { debuggerEventListeners.push(fn); }) },
     };
     const tabs = {
       get: vi.fn(async () => ({ id: 1, windowId: 1, url: 'https://x.com/home' })),

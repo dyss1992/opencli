@@ -29,6 +29,14 @@ import { PKG_VERSION } from './version.js';
 import { DEFAULT_CONTEXT_ID } from './browser/profile.js';
 import { recordExtensionVersion } from './update-check.js';
 import {
+  chromeExtensionIdFromOrigin,
+  isBrowserAutofillExtensionAllowed,
+  isCredentialBearingAction,
+  loadBrowserAutofillConfig,
+  readBrowserAutofillCredential,
+  selectBrowserAutofillEntry,
+} from './browser/autofill.js';
+import {
   PROFILE_DISCONNECTED_HINT,
   buildCommandDispatchFailure,
   buildCommandTimeoutFailure,
@@ -48,6 +56,7 @@ if (!isIgnorableDaemonPortEnv(process.env.OPENCLI_DAEMON_PORT)) {
 type ExtensionProfileConnection = {
   contextId: string;
   ws: WebSocket;
+  extensionId: string | null;
   extensionVersion: string | null;
   extensionCompatRange: string | null;
   lastSeenAt: number;
@@ -99,6 +108,69 @@ class DaemonCommandFailure extends Error {
   }
 }
 
+type AutofillRequestMessage = {
+  type: 'autofill-request';
+  requestId: string;
+  url?: string;
+};
+
+function isAutofillRequestMessage(value: unknown): value is AutofillRequestMessage {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return record.type === 'autofill-request' && typeof record.requestId === 'string';
+}
+
+function respondToAutofillRequest(ws: WebSocket, requestId: string, payload: Record<string, unknown>): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'autofill-response', requestId, ...payload }));
+}
+
+function handleAutofillRequest(ws: WebSocket, message: AutofillRequestMessage): void {
+  const connection = [...extensionProfiles.values()]
+    .find((entry) => entry.ws === ws && entry.ws.readyState === WebSocket.OPEN);
+  if (!connection) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'autofill_not_authorized' });
+    return;
+  }
+  const config = loadBrowserAutofillConfig();
+  if (!isBrowserAutofillExtensionAllowed(connection.extensionId, config.allowedExtensionIds)) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'autofill_not_authorized' });
+    return;
+  }
+  const rawUrl = typeof message.url === 'string' ? message.url : '';
+  if (!rawUrl) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'missing_profile_or_url' });
+    return;
+  }
+  const entry = selectBrowserAutofillEntry(
+    config.entries,
+    connection.contextId,
+    rawUrl,
+  );
+  if (!entry) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'no_matching_autofill_entry' });
+    return;
+  }
+  const credential = readBrowserAutofillCredential(entry);
+  if (!credential) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'credential_not_found' });
+    return;
+  }
+  respondToAutofillRequest(ws, message.requestId, {
+    ok: true,
+    credential: {
+      username: credential.username,
+      password: credential.password,
+      allowedHosts: entry.allowedHosts,
+      usernameSelectors: entry.usernameSelectors ?? [],
+      passwordSelectors: entry.passwordSelectors ?? [],
+      activateTextPatterns: entry.activateTextPatterns ?? [],
+      submitSelectors: entry.submitSelectors ?? [],
+      submit: false,
+    },
+  });
+}
+
 function pushLog(entry: LogEntry): void {
   logBuffer.push(entry);
   if (logBuffer.length > LOG_BUFFER_SIZE) logBuffer.shift();
@@ -142,7 +214,11 @@ function resolveExtensionConnection(contextId?: string, preferredContextId?: str
   };
 }
 
-function registerExtensionConnection(ws: WebSocket, rawContextId: unknown): ExtensionProfileConnection {
+function registerExtensionConnection(
+  ws: WebSocket,
+  rawContextId: unknown,
+  extensionId: string | null,
+): ExtensionProfileConnection {
   const contextId = typeof rawContextId === 'string' && rawContextId.trim()
     ? rawContextId.trim()
     : DEFAULT_CONTEXT_ID;
@@ -157,6 +233,7 @@ function registerExtensionConnection(ws: WebSocket, rawContextId: unknown): Exte
   const connection: ExtensionProfileConnection = {
     contextId,
     ws,
+    extensionId,
     extensionVersion: current?.ws === ws ? current.extensionVersion : null,
     extensionCompatRange: current?.ws === ws ? current.extensionCompatRange : null,
     lastSeenAt: Date.now(),
@@ -264,7 +341,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const mem = process.memoryUsage();
     const params = new URL(url, `http://localhost:${PORT}`).searchParams;
     const requestedContextId = params.get('contextId')?.trim() || undefined;
-    const route = resolveExtensionConnection(requestedContextId);
+    const preferredContextId = params.get('preferredContextId')?.trim() || undefined;
+    const route = resolveExtensionConnection(requestedContextId, preferredContextId);
     const profiles = activeProfiles().map((profile) => ({
       contextId: profile.contextId,
       extensionConnected: true,
@@ -281,7 +359,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       extensionConnected: !!route.connection,
       extensionVersion: route.connection?.extensionVersion ?? undefined,
       extensionCompatRange: route.connection?.extensionCompatRange ?? undefined,
-      contextId: route.connection?.contextId ?? requestedContextId,
+      contextId: route.connection?.contextId ?? requestedContextId ?? preferredContextId,
       profileRequired: route.errorCode === 'profile_required',
       profileDisconnected: route.errorCode === 'profile_disconnected',
       profiles,
@@ -336,6 +414,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           ...(route.errorHint ? { errorHint: route.errorHint } : {}),
         });
         return;
+      }
+
+      if (isCredentialBearingAction(body.action)) {
+        const config = loadBrowserAutofillConfig();
+        if (!isBrowserAutofillExtensionAllowed(route.connection.extensionId, config.allowedExtensionIds)) {
+          jsonResponse(res, 403, {
+            id: body.id,
+            ok: false,
+            errorCode: 'credential_transport_not_authorized',
+            error: 'The connected browser extension is not authorized to receive credentials.',
+          });
+          return;
+        }
       }
 
       // Absolute deadline wins over the legacy duration field: all hops share
@@ -425,7 +516,8 @@ const wss = new WebSocketServer({
   },
 });
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  const extensionId = chromeExtensionIdFromOrigin(req.headers['origin']);
   log.info('[daemon] Extension connected');
 
   // ── Heartbeat: ping every 15s, close if 2 pongs missed ──
@@ -455,7 +547,7 @@ wss.on('connection', (ws: WebSocket) => {
 
       // Handle hello message from extension (version handshake)
       if (msg.type === 'hello') {
-        const connection = registerExtensionConnection(ws, msg.contextId);
+        const connection = registerExtensionConnection(ws, msg.contextId, extensionId);
         connection.extensionVersion = typeof msg.version === 'string' ? msg.version : null;
         connection.extensionCompatRange = typeof msg.compatRange === 'string' ? msg.compatRange : null;
         connection.lastSeenAt = Date.now();
@@ -477,6 +569,11 @@ wss.on('connection', (ws: WebSocket) => {
       // keeps the MV3 service worker alive; nothing to do here.
       if (msg.type === 'ping') return;
 
+      if (isAutofillRequestMessage(msg)) {
+        handleAutofillRequest(ws, msg);
+        return;
+      }
+
       // Handle command results
       const p = pending.get(msg.id);
       if (p) {
@@ -486,10 +583,9 @@ wss.on('connection', (ws: WebSocket) => {
       // Malformed message from the extension. Surface so protocol drift /
       // version skew between daemon and extension shows up in the log
       // instead of presenting as a generic command timeout downstream.
-      const sample = data.toString().slice(0, 200);
       log.warn(
         `[daemon] Ignoring malformed WS message from extension: ` +
-        `${err instanceof Error ? err.message : String(err)} (first 200 chars: ${JSON.stringify(sample)})`,
+        `${err instanceof Error ? err.message : String(err)}`,
       );
     }
   });
