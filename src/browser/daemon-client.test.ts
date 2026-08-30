@@ -560,6 +560,21 @@ describe('daemon-client', () => {
     expect(body.timeout).toBe(120);
   });
 
+  it('sendCommand raises the transport timeout from OPENCLI_BROWSER_COMMAND_TIMEOUT', async () => {
+    vi.stubEnv('OPENCLI_BROWSER_COMMAND_TIMEOUT', '300');
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ id: 'server', ok: true, data: 1 }),
+    } as Response);
+
+    await expect(sendCommand('exec', { code: '1' })).resolves.toBe(1);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as { timeout?: number };
+    expect(body.timeout).toBe(300);
+  });
+
   it('sendCommand extends body.timeout past an extension-side timeoutMs (wait-download)', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValueOnce({

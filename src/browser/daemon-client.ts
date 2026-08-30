@@ -45,6 +45,14 @@ const HTTP_TIMEOUT_MARGIN_MS = 10_000;
 
 let _userCommandTimeoutSeconds: number | null = null;
 
+function configuredDefaultCommandTimeoutSeconds(): number {
+  const raw = process.env.OPENCLI_BROWSER_COMMAND_TIMEOUT;
+  if (raw === undefined) return DEFAULT_COMMAND_TIMEOUT_SECONDS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_COMMAND_TIMEOUT_SECONDS;
+  return Math.max(DEFAULT_COMMAND_TIMEOUT_SECONDS, parsed);
+}
+
 /**
  * Propagate the user's `--timeout` down to the transport layer. Without this
  * the daemon/HTTP deadlines stay at their defaults and a long-running command
@@ -55,7 +63,7 @@ export function setDaemonCommandTimeoutSeconds(seconds: number | null): void {
 }
 
 function effectiveCommandTimeoutSeconds(params: Omit<DaemonCommand, 'id' | 'action'>): number {
-  const base = _userCommandTimeoutSeconds ?? DEFAULT_COMMAND_TIMEOUT_SECONDS;
+  const base = _userCommandTimeoutSeconds ?? configuredDefaultCommandTimeoutSeconds();
   if (typeof params.timeoutMs === 'number' && params.timeoutMs > 0) {
     return Math.max(base, Math.ceil((params.timeoutMs + EXTENSION_OP_TIMEOUT_MARGIN_MS) / 1000));
   }
