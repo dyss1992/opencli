@@ -2234,6 +2234,13 @@ describe('background tab isolation', () => {
 
   const REGISTRY_KEY = 'opencli_target_lease_registry_v2';
 
+  type PersistedRegistrySnapshot = {
+    ownedContainers: {
+      interactive: { groupId?: number };
+    };
+    leases: Record<string, unknown>;
+  };
+
   // Gate the registry read (in storage.session) so the startup recovery
   // chain (workerReady) stays pending on demand. Every other storage read
   // (context id) resolves normally. `readDirect` bypasses the gate so a test
@@ -2247,7 +2254,8 @@ describe('background tab isolation', () => {
     });
     return {
       gate,
-      readDirect: async (key: string) => (await originalGet(key))[key],
+      readDirect: async (key: string): Promise<PersistedRegistrySnapshot> =>
+        (await originalGet(key))[key] as PersistedRegistrySnapshot,
     };
   }
 
