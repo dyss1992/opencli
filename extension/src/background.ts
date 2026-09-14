@@ -8,6 +8,7 @@
 declare const __OPENCLI_COMPAT_RANGE__: string;
 
 import type { Command, Result } from './protocol';
+import { readBrowserSnapshot } from './browser-readback';
 import { DAEMON_HOST, DAEMON_PORT, DAEMON_WS_URL, DAEMON_PING_URL } from './protocol';
 import * as executor from './cdp';
 import * as identity from './identity';
@@ -1403,6 +1404,21 @@ async function fetchDaemonVersion(): Promise<string | null> {
 // ─── Command dispatcher ─────────────────────────────────────────────
 
 async function handleCommand(cmd: Command): Promise<Result> {
+  if (cmd.action === 'tabs' && cmd.op === 'snapshot') {
+    await workerReady;
+    const owned = new Set<number>();
+    for (const [key, lease] of automationSessions) {
+      if (lease.owned && getWindowMode(key) === 'background' && lease.preferredTabId !== null) {
+        owned.add(lease.preferredTabId);
+      }
+    }
+    try {
+      return { id: cmd.id, ok: true, data: await readBrowserSnapshot(owned) };
+    } catch (error) {
+      if (error instanceof Error) return errorResult(cmd.id, error);
+      throw error;
+    }
+  }
   if (cmd.action === 'health') {
     return { id: cmd.id, ok: true, data: { healthy: true } };
   }

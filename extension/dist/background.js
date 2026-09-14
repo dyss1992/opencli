@@ -1,3 +1,30 @@
+class BrowserReadbackError extends Error {
+}
+async function readBrowserSnapshot(backgroundOwnedTabIds) {
+  const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+  return {
+    schema: "opencli-browser-snapshot-v1",
+    extensionVersion: chrome.runtime.getManifest().version,
+    windows: windows.map((window) => {
+      if (window.id === void 0) throw new BrowserReadbackError("window identifier unavailable");
+      if (window.tabs === void 0) throw new BrowserReadbackError("window tabs unavailable");
+      return {
+        id: window.id,
+        focused: window.focused,
+        tabs: window.tabs.map((tab) => {
+          if (tab.id === void 0) throw new BrowserReadbackError("tab identifier unavailable");
+          return {
+            id: tab.id,
+            index: tab.index,
+            active: tab.active,
+            backgroundOwned: backgroundOwnedTabIds.has(tab.id)
+          };
+        })
+      };
+    })
+  };
+}
+
 const DAEMON_PORT = 19825;
 const DAEMON_HOST = "127.0.0.1";
 const DAEMON_WS_URL = `ws://${DAEMON_HOST}:${DAEMON_PORT}/ext`;
@@ -2066,6 +2093,21 @@ async function fetchDaemonVersion() {
   }
 }
 async function handleCommand(cmd) {
+  if (cmd.action === "tabs" && cmd.op === "snapshot") {
+    await workerReady;
+    const owned = /* @__PURE__ */ new Set();
+    for (const [key, lease] of automationSessions) {
+      if (lease.owned && getWindowMode(key) === "background" && lease.preferredTabId !== null) {
+        owned.add(lease.preferredTabId);
+      }
+    }
+    try {
+      return { id: cmd.id, ok: true, data: await readBrowserSnapshot(owned) };
+    } catch (error) {
+      if (error instanceof Error) return errorResult(cmd.id, error);
+      throw error;
+    }
+  }
   if (cmd.action === "health") {
     return { id: cmd.id, ok: true, data: { healthy: true } };
   }

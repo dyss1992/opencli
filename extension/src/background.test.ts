@@ -336,6 +336,25 @@ describe('background tab isolation', () => {
     vi.unstubAllGlobals();
   });
 
+  it('reads a snapshot without creating a lease or changing browser resources', async () => {
+    const { chrome } = createChromeMock();
+    const getAll = vi.fn(async () => []);
+    vi.stubGlobal('chrome', { ...chrome, windows: { ...chrome.windows, getAll } });
+    const mod = await import('./background');
+    await mod.__test__.handleCommand({ id: 'warm', action: 'tabs', op: 'snapshot' });
+    vi.clearAllMocks();
+    const result = await mod.__test__.handleCommand({
+      id: 'snapshot', action: 'tabs', op: 'snapshot', session: 'read-only',
+      tabPlacement: 'existing-window', windowMode: 'background',
+    });
+    expect(result.ok).toBe(true);
+    expect(getAll).toHaveBeenCalledOnce();
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.windows.update).not.toHaveBeenCalled();
+    expect(mod.__test__.getSession(browserKey('read-only'))).toBeNull();
+  });
+
   it('answers health without resolving or creating browser resources', async () => {
     const { chrome } = createChromeMock();
     vi.stubGlobal('chrome', chrome);
