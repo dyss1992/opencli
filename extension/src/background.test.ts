@@ -743,6 +743,26 @@ describe('background tab isolation', () => {
     );
   });
 
+  it('emulates page focus without changing the selected tab or window', async () => {
+    const { chrome } = createChromeMock();
+    chrome.debugger.sendCommand = vi.fn(async () => ({}));
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    mod.__test__.setSession(adapterKey('focus-trial'), {windowId: 1, owned: true, preferredTabId: 1});
+    chrome.tabs.update.mockClear();
+    chrome.windows.update.mockClear();
+    for (const enabled of [true, false]) {
+      const result = await mod.__test__.handleCommand({
+        id: `focus-${enabled}`, action: 'cdp', session: 'focus-trial', surface: 'adapter',
+        windowMode: 'background', cdpMethod: 'Emulation.setFocusEmulationEnabled', cdpParams: {enabled},
+      });
+      expect(result).toEqual(expect.objectContaining({ok: true}));
+      expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({tabId: 1}, 'Emulation.setFocusEmulationEnabled', {enabled});
+    }
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.windows.update).not.toHaveBeenCalled();
+  });
+
   it('routes frame-target CDP passthrough calls through the iframe target', async () => {
     const { chrome } = createChromeMock();
     chrome.debugger.sendCommand = vi.fn(async (_target: unknown, method: string, params?: Record<string, unknown>) => {

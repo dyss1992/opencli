@@ -2648,7 +2648,8 @@ const CDP_ALLOWLIST = /* @__PURE__ */ new Set([
   "Runtime.enable",
   // Emulation (used by screenshot full-page)
   "Emulation.setDeviceMetricsOverride",
-  "Emulation.clearDeviceMetricsOverride"
+  "Emulation.clearDeviceMetricsOverride",
+  "Emulation.setFocusEmulationEnabled"
 ]);
 async function handleCdp(cmd, leaseKey) {
   if (!cmd.cdpMethod) return { id: cmd.id, ok: false, error: "Missing cdpMethod" };

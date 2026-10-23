@@ -2114,6 +2114,7 @@ const CDP_ALLOWLIST = new Set([
   // Emulation (used by screenshot full-page)
   'Emulation.setDeviceMetricsOverride',
   'Emulation.clearDeviceMetricsOverride',
+  'Emulation.setFocusEmulationEnabled',
 ]);
 
 async function handleCdp(cmd: Command, leaseKey: string): Promise<Result> {
