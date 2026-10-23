@@ -359,6 +359,10 @@ export abstract class BasePage implements IPage {
   }
 
   protected async assertNativeInputVisible(): Promise<void> {
+    // Gumo uses CDP input on inactive tabs in the existing background window.
+    if (process.env.OPENCLI_WINDOW === 'background'
+      || process.env.OPENCLI_BROWSER_WINDOW_MODE === 'background'
+      || process.env.OPENCLI_TAB_PLACEMENT === 'existing-window') return;
     let visibility: unknown;
     try { visibility = await this.evaluate(NATIVE_INPUT_VISIBILITY_JS); }
     catch { throw new NativeInputVisibilityError(); }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CliError } from '../errors.js';
 import { BasePage, NATIVE_INPUT_VISIBILITY_JS, NativeInputVisibilityError } from './base-page.js';
 import { TargetError } from './target-errors.js';
@@ -956,6 +956,12 @@ describe('BasePage.sleep', () => {
 
 
 describe('hidden native input failures', () => {
+  beforeEach(() => {
+    vi.stubEnv('OPENCLI_WINDOW', undefined);
+    vi.stubEnv('OPENCLI_BROWSER_WINDOW_MODE', undefined);
+    vi.stubEnv('OPENCLI_TAB_PLACEMENT', undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
   it.each(['hover', 'dblClick'] as const)('rejects hidden %s without native events or DOM fallback', async method => {
     const page = new ActionPage();
     page.visibility = 'hidden';
@@ -991,4 +997,42 @@ describe('hidden native input failures', () => {
     await expect(page.pressKey('Enter')).rejects.toBeInstanceOf(NativeInputVisibilityError);
     expect(page.scripts).toEqual([]);
   });
+});
+
+
+describe('Gumo background native input visibility', () => {
+  beforeEach(() => {
+    vi.stubEnv('OPENCLI_WINDOW', undefined);
+    vi.stubEnv('OPENCLI_BROWSER_WINDOW_MODE', undefined);
+    vi.stubEnv('OPENCLI_TAB_PLACEMENT', undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(['OPENCLI_WINDOW', 'OPENCLI_BROWSER_WINDOW_MODE', 'OPENCLI_TAB_PLACEMENT'])(
+    'allows hidden CDP input with %s without selecting a tab', async key => {
+      vi.stubEnv(key, key === 'OPENCLI_TAB_PLACEMENT' ? 'existing-window' : 'background');
+      const page = new ActionPage();
+      page.visibility = 'hidden';
+      page.cdp = vi.fn().mockResolvedValue({});
+      const select = vi.spyOn(page, 'selectTab');
+      page.results = [resolveOk, { x: 20, y: 30, w: 100, h: 20, visible: true }];
+      await page.hover('#target');
+      expect(vi.mocked(page.cdp).mock.calls.some(([name]) => name.startsWith('Input.'))).toBe(true);
+      expect(select).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, 'foreground'])(
+    'keeps rejecting hidden input outside background mode (%s)', async mode => {
+      vi.stubEnv('OPENCLI_WINDOW', mode);
+      vi.stubEnv('OPENCLI_BROWSER_WINDOW_MODE', mode);
+      vi.stubEnv('OPENCLI_TAB_PLACEMENT', 'new-window');
+      const page = new ActionPage();
+      page.visibility = 'hidden';
+      page.cdp = vi.fn().mockResolvedValue({});
+      page.results = [resolveOk, { x: 20, y: 30, w: 100, h: 20, visible: true }];
+      await expect(page.hover('#target')).rejects.toBeInstanceOf(NativeInputVisibilityError);
+      expect(vi.mocked(page.cdp).mock.calls.some(([name]) => name.startsWith('Input.'))).toBe(false);
+    },
+  );
 });
