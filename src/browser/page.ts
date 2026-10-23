@@ -436,7 +436,7 @@ export class Page extends CDPBasePage {
 
   /** Precise click using DOM.getContentQuads/getBoxModel for inline elements */
   async clickWithQuads(ref: string): Promise<void> {
-    await this.assertNativeInputVisible();
+    await this.assertCdpInputAllowed();
     const safeRef = JSON.stringify(ref);
     const cssSelector = `[data-opencli-ref="${ref.replace(/"/g, '\\"')}"]`;
 

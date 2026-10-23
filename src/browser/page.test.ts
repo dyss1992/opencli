@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { sendCommandMock, sendCommandFullMock } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
@@ -576,7 +576,11 @@ describe('Page.evaluateOnce', () => {
 
 
 describe('daemon-backed native input visibility', () => {
-  beforeEach(() => { sendCommandMock.mockReset(); sendCommandFullMock.mockReset(); });
+  beforeEach(() => {
+    sendCommandMock.mockReset(); sendCommandFullMock.mockReset();
+    for (const key of ['OPENCLI_WINDOW','OPENCLI_BROWSER_WINDOW_MODE','OPENCLI_TAB_PLACEMENT']) vi.stubEnv(key, undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
   it('blocks hidden native clicks, key presses and quad clicks before CDP dispatch', async () => {
     sendCommandMock.mockResolvedValue('hidden');
     const page = new Page('hidden-session');

@@ -48,6 +48,7 @@ import * as systemInput from './system-input.js';
 describe('CDPBridge cookies', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
+    for (const key of ['OPENCLI_WINDOW', 'OPENCLI_BROWSER_WINDOW_MODE', 'OPENCLI_TAB_PLACEMENT']) vi.stubEnv(key, undefined);
   });
 
   it('filters cookies by actual domain match instead of substring match', async () => {
@@ -383,7 +384,7 @@ describe('CDPPage.evaluateOnce', () => {
 
 
 describe('CDP systemClick with mocked input', () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
   it('checks visibility and converts viewport coordinates without moving the real mouse', async () => {
     const click = vi.spyOn(systemInput, 'clickScreenPoint').mockResolvedValue();
@@ -398,7 +399,8 @@ describe('CDP systemClick with mocked input', () => {
     await bridge.close();
   });
 
-  it('does not invoke system input for hidden pages', async () => {
+  it.each([['OPENCLI_WINDOW','background'], ['OPENCLI_BROWSER_WINDOW_MODE','background'], ['OPENCLI_TAB_PLACEMENT','existing-window']])('does not invoke system input for hidden pages with %s', async (key, value) => {
+    vi.stubEnv(key, value);
     const click = vi.spyOn(systemInput, 'clickScreenPoint').mockResolvedValue();
     const bridge = new CDPBridge();
     vi.spyOn(bridge, 'send').mockResolvedValue({});

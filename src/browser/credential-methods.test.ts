@@ -21,7 +21,7 @@ beforeEach(() => {
   mocks.entries.mockReturnValue([]);
   mocks.sendFull.mockResolvedValue({ page: 'fixture-page' });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('credential methods with mocked transport and keychain', () => {
   it('uses the dedicated fill action with exact profile and page identity', async () => {
@@ -70,5 +70,55 @@ describe('credential methods with mocked transport and keychain', () => {
     mocks.send.mockResolvedValueOnce('hidden');
     await expect(new Page('fixture-session').systemClick(90, 200)).rejects.toThrow();
     expect(mocks.click).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('background CDP and system input separation', () => {
+  const modes = [
+    ['OPENCLI_WINDOW', 'background'],
+    ['OPENCLI_BROWSER_WINDOW_MODE', 'background'],
+    ['OPENCLI_TAB_PLACEMENT', 'existing-window'],
+  ] as const;
+
+  it.each(modes)('allows hidden CDP mouse and keyboard with %s', async (key, value) => {
+    vi.stubEnv(key, value);
+    mocks.send.mockResolvedValue({});
+    const page = new Page('fixture-session');
+    await page.nativeClick(10, 20);
+    await page.nativeKeyPress('Enter');
+    const dispatch = mocks.send.mock.calls.filter(([action]) => action === 'cdp');
+    expect(dispatch).toHaveLength(5);
+    expect(dispatch.every(([, options]) => options.cdpMethod.startsWith('Input.dispatch'))).toBe(true);
+    expect(mocks.click).not.toHaveBeenCalled();
+    expect(mocks.send.mock.calls.some(([action]) => action === 'exec')).toBe(false);
+  });
+
+  it.each(modes)('still blocks hidden system mouse with %s', async (key, value) => {
+    vi.stubEnv(key, value);
+    mocks.send.mockResolvedValue('hidden');
+    await expect(new Page('fixture-session').systemClick(10, 20)).rejects.toMatchObject({code: 'COMMAND_EXEC'});
+    expect(mocks.click).not.toHaveBeenCalled();
+  });
+
+  it('keeps system input visible-only with foreground plus existing-window', async () => {
+    vi.stubEnv('OPENCLI_WINDOW', 'foreground');
+    vi.stubEnv('OPENCLI_TAB_PLACEMENT', 'existing-window');
+    mocks.send.mockResolvedValue('hidden');
+    const page = new Page('fixture-session');
+    await expect(page.systemClick(10, 20)).rejects.toMatchObject({code: 'COMMAND_EXEC'});
+    expect(mocks.click).not.toHaveBeenCalled();
+    mocks.send.mockResolvedValueOnce('visible').mockResolvedValueOnce({ screenX: 0, screenY: 0, outerWidth: 100, outerHeight: 100, innerWidth: 100, innerHeight: 100 });
+    await page.systemClick(10, 20);
+    expect(mocks.click).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks hidden CDP input outside the approved background modes', async () => {
+    for (const key of ['OPENCLI_WINDOW','OPENCLI_BROWSER_WINDOW_MODE','OPENCLI_TAB_PLACEMENT']) vi.stubEnv(key, undefined);
+    mocks.send.mockResolvedValue('hidden');
+    const page = new Page('fixture-session');
+    await expect(page.nativeClick(10, 20)).rejects.toMatchObject({code: 'COMMAND_EXEC'});
+    await expect(page.nativeKeyPress('Enter')).rejects.toMatchObject({code: 'COMMAND_EXEC'});
+    expect(mocks.send.mock.calls.some(([action]) => action === 'cdp')).toBe(false);
   });
 });

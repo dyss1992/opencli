@@ -358,11 +358,15 @@ export abstract class BasePage implements IPage {
     throw new Error(`Click failed: ${result.error ?? 'JS click and CDP fallback both failed'}`);
   }
 
-  protected async assertNativeInputVisible(): Promise<void> {
-    // Gumo uses CDP input on inactive tabs in the existing background window.
+  protected async assertCdpInputAllowed(): Promise<void> {
+    // CDP targets a browser page without moving the operating-system pointer.
     if (process.env.OPENCLI_WINDOW === 'background'
       || process.env.OPENCLI_BROWSER_WINDOW_MODE === 'background'
       || process.env.OPENCLI_TAB_PLACEMENT === 'existing-window') return;
+    await this.assertNativeInputVisible();
+  }
+
+  protected async assertNativeInputVisible(): Promise<void> {
     let visibility: unknown;
     try { visibility = await this.evaluate(NATIVE_INPUT_VISIBILITY_JS); }
     catch { throw new NativeInputVisibilityError(); }
@@ -385,7 +389,7 @@ export abstract class BasePage implements IPage {
   protected async tryNativeMouseMove(x: number, y: number): Promise<boolean> {
     const cdp = (this as IPage).cdp;
     if (typeof cdp !== 'function') return false;
-    await this.assertNativeInputVisible();
+    await this.assertCdpInputAllowed();
     try {
       await cdp.call(this, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
       return true;
@@ -397,7 +401,7 @@ export abstract class BasePage implements IPage {
   protected async tryNativeDoubleClick(x: number, y: number): Promise<boolean> {
     const cdp = (this as IPage).cdp;
     if (typeof cdp !== 'function') return false;
-    await this.assertNativeInputVisible();
+    await this.assertCdpInputAllowed();
     try {
       await cdp.call(this, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
       await cdp.call(this, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
@@ -413,7 +417,7 @@ export abstract class BasePage implements IPage {
   protected async tryNativeDrag(from: { x: number; y: number }, to: { x: number; y: number }): Promise<boolean> {
     const cdp = (this as IPage).cdp;
     if (typeof cdp !== 'function') return false;
-    await this.assertNativeInputVisible();
+    await this.assertCdpInputAllowed();
     const midX = Math.round((from.x + to.x) / 2);
     const midY = Math.round((from.y + to.y) / 2);
     try {
@@ -1271,7 +1275,7 @@ export abstract class CDPBasePage extends BasePage {
   }
 
   async nativeClick(x: number, y: number): Promise<void> {
-    await this.assertNativeInputVisible();
+    await this.assertCdpInputAllowed();
     await this.cdp('Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x,
@@ -1299,7 +1303,7 @@ export abstract class CDPBasePage extends BasePage {
   }
 
   async nativeKeyPress(key: string, modifiers: string[] = []): Promise<void> {
-    await this.assertNativeInputVisible();
+    await this.assertCdpInputAllowed();
     let modifierFlags = 0;
     for (const mod of modifiers) {
       if (mod === 'Alt') modifierFlags |= 1;
