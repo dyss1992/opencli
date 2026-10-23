@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpenCLI",
-  "version": "1.0.26",
+  "version": "1.0.30",
   "description": "Browser automation bridge for the OpenCLI CLI tool. Executes commands in Chrome tab leases via a local daemon.",
   "permissions": [
     "debugger",
@@ -11,7 +11,9 @@
     "alarms",
     "storage",
     "tabGroups",
-    "downloads"
+    "downloads",
+    "scripting",
+    "webNavigation"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -37,5 +39,30 @@
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   },
-  "homepage_url": "https://github.com/jackwener/opencli"
+  "homepage_url": "https://github.com/jackwener/opencli",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://item.upload.taobao.com/*"
+      ],
+      "js": [
+        "dist/taobao-beforeunload-content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://login.taobao.com/*",
+        "https://loginmyseller.taobao.com/*",
+        "https://havanalogin.taobao.com/*"
+      ],
+      "js": [
+        "dist/autofill-content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
 }

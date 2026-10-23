@@ -195,11 +195,13 @@ function createChromeMock() {
       }))),
       attach: vi.fn(),
       detach: vi.fn(),
-      sendCommand: vi.fn(),
+      sendCommand: vi.fn<(target: unknown, method: string, params?: Record<string, unknown>) => Promise<any>>(async () => ({})),
       onDetach: { addListener: vi.fn() } as Listener<(source: { tabId?: number }) => void>,
       onEvent: { addListener: vi.fn() } as Listener<(source: any, method: string, params: any) => void>,
     },
     windows: {
+      getAll: vi.fn(async (_opts?: unknown) => [1, 2].map(id => ({id, type: 'normal', incognito: false, focused: id === lastFocusedWindowId, tabs: tabs.filter(t => t.windowId === id)}))),
+      update: vi.fn(async () => ({})),
       get: vi.fn(async (windowId: number) => ({ id: windowId, focused: windowId === lastFocusedWindowId })),
       create: vi.fn(async ({ url, focused, width, height, type }: any) => ({ id: 1, url, focused, width, height, type })),
       remove: vi.fn(async (_windowId: number) => {}),
@@ -272,6 +274,120 @@ describe('background tab isolation', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('keeps existing-window creation and logical selection inactive and ungrouped', async () => {
+    const {chrome, tabs} = createChromeMock(); vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    const command = {id:'existing', action:'tabs', op:'new', session:'gumo', surface:'adapter', windowMode:'background', tabPlacement:'existing-window', url:'https://test.example'} as const;
+    expect((await mod.__test__.handleCommand(command)).ok).toBe(true);
+    expect(chrome.tabs.create).toHaveBeenCalledWith({windowId:2,url:'https://test.example',active:false});
+    expect(chrome.windows.create).not.toHaveBeenCalled();expect(chrome.windows.update).not.toHaveBeenCalled();expect(chrome.tabs.group).not.toHaveBeenCalled();expect(chrome.tabs.move).not.toHaveBeenCalled();
+    expect(tabs.find(t=>t.id===2)?.active).toBe(true);
+    chrome.tabs.update.mockClear();
+    expect((await mod.__test__.handleCommand({...command,op:'select',index:0})).ok).toBe(true);
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(mod.__test__.getSession(adapterKey('gumo'))?.tabPlacement).toBe('existing-window');
+  });
+
+  it('fails without opening a new window when the selected profile has no normal window', async () => {
+    const {chrome}=createChromeMock();chrome.windows.getAll.mockResolvedValue([]);vi.stubGlobal('chrome',chrome);
+    const mod=await import('./background');
+    const result=await mod.__test__.handleCommand({id:'none',action:'tabs',op:'new',session:'none',surface:'adapter',tabPlacement:'existing-window'});
+    expect(result).toMatchObject({ok:false,errorCode:'existing_window_required'});
+    expect(chrome.windows.create).not.toHaveBeenCalled();expect(chrome.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it('tracks several existing-window tabs and refuses a user tab as a logical target', async () => {
+    const {chrome}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'multi',action:'tabs',op:'new',session:'multi',surface:'adapter',tabPlacement:'existing-window',url:'https://test.example'} as const;
+    await mod.__test__.handleCommand(command);await mod.__test__.handleCommand(command);
+    expect(mod.__test__.getSession(adapterKey('multi'))?.ownedTabIds).toEqual([10,11]);
+    const listed=await mod.__test__.handleCommand({...command,op:'list'});
+    expect((listed.data as unknown[]).length).toBe(2);
+    expect(await mod.__test__.handleCommand({...command,op:'select',page:'target-2'})).toMatchObject({ok:false});
+    expect(await mod.__test__.handleCommand({...command,op:'close',page:'target-2'})).toMatchObject({ok:false});
+    expect(chrome.tabs.remove).not.toHaveBeenCalled();expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect((await mod.__test__.handleCommand({...command,op:'close',page:'target-11'})).ok).toBe(true);
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(11);expect(chrome.tabs.remove).not.toHaveBeenCalledWith(10);
+    expect(mod.__test__.getSession(adapterKey('multi'))?.ownedTabIds).toEqual([10]);
+  });
+
+  it('retains other owned tabs after either a preferred or nonpreferred tab closes', async () => {
+    const {chrome}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'removed',action:'tabs',op:'new',session:'removed',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);await mod.__test__.handleCommand(command);await mod.__test__.handleCommand(command);
+    const onRemoved=chrome.tabs.onRemoved.addListener.mock.calls[0][0];
+    await onRemoved(10);expect(mod.__test__.getSession(adapterKey('removed'))?.ownedTabIds).toEqual([11,12]);
+    await onRemoved(12);expect(mod.__test__.getSession(adapterKey('removed'))?.ownedTabIds).toEqual([11]);
+    expect(mod.__test__.getSession(adapterKey('removed'))?.preferredTabId).toBe(11);
+    await onRemoved(11);expect(mod.__test__.getSession(adapterKey('removed'))).toBeNull();
+  });
+
+  it('never opens a container when an existing-window owned tab becomes nondebuggable', async () => {
+    const {chrome,tabs}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'invalid',action:'tabs',op:'new',session:'invalid',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);tabs.find(t=>t.id===10)!.url='chrome://extensions';
+    expect(await mod.__test__.handleCommand({...command,action:'cdp',cdpMethod:'Runtime.enable'})).toMatchObject({ok:false,errorCode:'owned_tab_not_debuggable'});
+    expect(chrome.windows.create).not.toHaveBeenCalled();expect(chrome.tabs.group).not.toHaveBeenCalled();
+  });
+
+  it('does not ungroup a manually grouped existing-window tab during cleanup', async () => {
+    const {chrome,tabs}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'group',action:'tabs',op:'new',session:'group',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);tabs.find(t=>t.id===10)!.groupId=99;
+    expect((await mod.__test__.handleCommand({...command,action:'close-owned-tab'})).ok).toBe(true);
+    expect(chrome.tabs.ungroup).not.toHaveBeenCalled();
+  });
+
+  it('retains ownership and reports cleanup lookup errors instead of claiming success', async () => {
+    const {chrome}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'denied',action:'tabs',op:'new',session:'denied',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);chrome.tabs.get.mockRejectedValue(new Error('Permission denied'));
+    expect(await mod.__test__.handleCommand({...command,action:'close-window'})).toMatchObject({ok:false});
+    expect(mod.__test__.getSession(adapterKey('denied'))?.ownedTabIds).toEqual([10]);
+    expect(chrome.tabs.remove).not.toHaveBeenCalled();
+  });
+
+  it('restores existing-window ownership across a service-worker wake without grouping or activating', async () => {
+    const {chrome}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    await mod.__test__.handleCommand({id:'persist',action:'tabs',op:'new',session:'persist',surface:'adapter',tabPlacement:'existing-window',siteSession:'persistent'});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    const registry=(await chrome.storage.session.get('opencli_target_lease_registry_v2'))['opencli_target_lease_registry_v2'] as any;
+    expect(registry.leases[adapterKey('persist')].tabPlacement).toBe('existing-window');
+    expect(registry.leases[adapterKey('persist')].ownedTabIds).toEqual([10]);
+    chrome.tabs.group.mockClear();chrome.tabs.update.mockClear();
+    await mod.__test__.reconcileTargetLeaseRegistry();
+    expect(mod.__test__.getSession(adapterKey('persist'))?.ownedTabIds).toEqual([10]);
+    expect(chrome.tabs.group).not.toHaveBeenCalled();expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+
+  it('closes only its own background tabs while retaining debugger dialog protection', async () => {
+    const {chrome}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'cleanup',action:'tabs',op:'new',session:'cleanup',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);await mod.__test__.handleCommand(command);
+    chrome.debugger.attach.mockClear();chrome.tabs.update.mockClear();
+    expect((await mod.__test__.handleCommand({...command,action:'close-window'})).ok).toBe(true);
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(10);expect(chrome.tabs.remove).toHaveBeenCalledWith(11);
+    expect(chrome.tabs.remove).not.toHaveBeenCalledWith(2);expect(chrome.windows.remove).not.toHaveBeenCalled();expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.debugger.attach).toHaveBeenCalled();
+  });
+
+  it('keeps a blank inactive tab rather than closing the last user window', async () => {
+    const {chrome,tabs}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'last',action:'tabs',op:'new',session:'last',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);tabs.splice(0,tabs.length,...tabs.filter(t=>t.id===10));
+    expect((await mod.__test__.handleCommand({...command,action:'close-window'})).ok).toBe(true);
+    expect(chrome.tabs.remove).not.toHaveBeenCalled();expect(chrome.windows.remove).not.toHaveBeenCalled();expect(chrome.tabs.update).toHaveBeenCalledWith(10,{url:'about:blank',active:false});
+  });
+
+  it('allows focus emulation while leaving native tab/window selection untouched', async () => {
+    const {chrome}=createChromeMock();chrome.debugger.sendCommand.mockResolvedValue({});vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'focus',action:'tabs',op:'new',session:'focus',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);chrome.tabs.update.mockClear();
+    expect((await mod.__test__.handleCommand({...command,action:'cdp',cdpMethod:'Emulation.setFocusEmulationEnabled',cdpParams:{enabled:true}})).ok).toBe(true);
+    expect(chrome.debugger.sendCommand).toHaveBeenCalledWith({tabId:10},'Emulation.setFocusEmulationEnabled',{enabled:true});
+    expect(chrome.tabs.update).not.toHaveBeenCalled();expect(chrome.windows.update).not.toHaveBeenCalled();
   });
 
   it('lists only automation-window web tabs', async () => {

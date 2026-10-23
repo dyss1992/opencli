@@ -27,6 +27,12 @@ describe('Page.getCurrentUrl', () => {
     warnMock.mockReset();
   });
 
+  it('preserves an explicit tab placement through the page API', async () => {
+    sendCommandMock.mockResolvedValueOnce('https://fixture.example');
+    const page=new Page('fixture',undefined,'profile-fixture','background','adapter',undefined,undefined,'existing-window');
+    await page.getCurrentUrl();expect(sendCommandMock).toHaveBeenCalledWith('exec',expect.objectContaining({tabPlacement:'existing-window',contextId:'profile-fixture'}));
+  });
+
   it('reads the real browser URL when no local navigation cache exists', async () => {
     sendCommandMock.mockResolvedValueOnce('https://notebooklm.google.com/notebook/nb-live');
 

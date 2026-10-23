@@ -9,6 +9,7 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
+          setupFiles: ['tests/unit-runtime-setup.ts'],
           include: ['src/**/*.test.ts'],
           exclude: ['clis/**/*.test.{ts,js}'],
           sequence: { groupOrder: 0 },

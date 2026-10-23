@@ -29,6 +29,14 @@ import { PKG_VERSION } from './version.js';
 import { DEFAULT_CONTEXT_ID } from './browser/profile.js';
 import { recordExtensionVersion } from './update-check.js';
 import {
+  chromeExtensionIdFromOrigin,
+  isBrowserAutofillExtensionAllowed,
+  isCredentialBearingAction,
+  loadBrowserAutofillConfig,
+  readBrowserAutofillCredential,
+  selectBrowserAutofillEntry,
+} from './browser/autofill.js';
+import {
   PROFILE_DISCONNECTED_HINT,
   buildCommandDispatchFailure,
   buildCommandTimeoutFailure,
@@ -56,6 +64,7 @@ if (!isIgnorableDaemonPortEnv(process.env.OPENCLI_DAEMON_PORT)) {
 type ExtensionProfileConnection = {
   contextId: string;
   ws: WebSocket;
+  extensionId: string | null;
   extensionVersion: string | null;
   extensionCompatRange: string | null;
   lastSeenAt: number;
@@ -144,6 +153,69 @@ class DaemonCommandFailure extends Error {
   }
 }
 
+type AutofillRequestMessage = {
+  type: 'autofill-request';
+  requestId: string;
+  url?: string;
+};
+
+function isAutofillRequestMessage(value: unknown): value is AutofillRequestMessage {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return record.type === 'autofill-request' && typeof record.requestId === 'string';
+}
+
+function respondToAutofillRequest(ws: WebSocket, requestId: string, payload: Record<string, unknown>): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'autofill-response', requestId, ...payload }));
+}
+
+function handleAutofillRequest(ws: WebSocket, message: AutofillRequestMessage): void {
+  const connection = [...extensionProfiles.values()]
+    .find((entry) => entry.ws === ws && entry.ws.readyState === WebSocket.OPEN);
+  if (!connection) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'autofill_not_authorized' });
+    return;
+  }
+  const config = loadBrowserAutofillConfig();
+  if (!isBrowserAutofillExtensionAllowed(connection.extensionId, config.allowedExtensionIds)) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'autofill_not_authorized' });
+    return;
+  }
+  const rawUrl = typeof message.url === 'string' ? message.url : '';
+  if (!rawUrl) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'missing_profile_or_url' });
+    return;
+  }
+  const entry = selectBrowserAutofillEntry(
+    config.entries,
+    connection.contextId,
+    rawUrl,
+  );
+  if (!entry) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'no_matching_autofill_entry' });
+    return;
+  }
+  const credential = readBrowserAutofillCredential(entry);
+  if (!credential) {
+    respondToAutofillRequest(ws, message.requestId, { ok: false, error: 'credential_not_found' });
+    return;
+  }
+  respondToAutofillRequest(ws, message.requestId, {
+    ok: true,
+    credential: {
+      username: credential.username,
+      password: credential.password,
+      allowedHosts: entry.allowedHosts,
+      usernameSelectors: entry.usernameSelectors ?? [],
+      passwordSelectors: entry.passwordSelectors ?? [],
+      activateTextPatterns: entry.activateTextPatterns ?? [],
+      submitSelectors: entry.submitSelectors ?? [],
+      submit: false,
+    },
+  });
+}
+
 function pushLog(entry: LogEntry): void {
   logBuffer.push(entry);
   if (logBuffer.length > LOG_BUFFER_SIZE) logBuffer.shift();
@@ -187,7 +259,7 @@ function resolveExtensionConnection(contextId?: string, preferredContextId?: str
   };
 }
 
-function registerExtensionConnection(ws: WebSocket, rawContextId: unknown): ExtensionProfileConnection {
+function registerExtensionConnection(ws: WebSocket, rawContextId: unknown, extensionId: string | null): ExtensionProfileConnection {
   const contextId = typeof rawContextId === 'string' && rawContextId.trim()
     ? rawContextId.trim()
     : DEFAULT_CONTEXT_ID;
@@ -202,6 +274,7 @@ function registerExtensionConnection(ws: WebSocket, rawContextId: unknown): Exte
   const connection: ExtensionProfileConnection = {
     contextId,
     ws,
+    extensionId,
     extensionVersion: current?.ws === ws ? current.extensionVersion : null,
     extensionCompatRange: current?.ws === ws ? current.extensionCompatRange : null,
     lastSeenAt: Date.now(),
@@ -266,7 +339,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // legitimate CLI requests pass through.  Chrome Extension connects via
   // WebSocket (which bypasses this HTTP handler entirely).
   const origin = req.headers['origin'] as string | undefined;
-  if (origin && !origin.startsWith('chrome-extension://')) {
+  if (origin && !chromeExtensionIdFromOrigin(origin)) {
     jsonResponse(res, 403, { ok: false, error: 'Forbidden: cross-origin request blocked' });
     return;
   }
@@ -399,6 +472,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         return;
       }
 
+      if (isCredentialBearingAction(body.action)) {
+        const config = loadBrowserAutofillConfig();
+        if (!isBrowserAutofillExtensionAllowed(route.connection.extensionId, config.allowedExtensionIds)) {
+          jsonResponse(res, 403, {
+            id: body.id,
+            ok: false,
+            errorCode: 'credential_transport_not_authorized',
+            error: 'The connected browser extension is not authorized to receive credentials.',
+          });
+          return;
+        }
+      }
+
       // ─── Site slot pool: admission ───────────────────────────────────
       // Daemon-local. Runs after profile routing (pools are per profile) and
       // before anything is dispatched. The request stays open while the run
@@ -515,7 +601,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           if (pending.get(body.id) !== entry) return;
           const failure = buildCommandDispatchFailure(entry.contextId);
           settlePending(body.id, entry, { error: new DaemonCommandFailure(failure.message, failure.errorCode, failure.errorHint, failure.status) });
-          log.warn(`[daemon] Failed to dispatch command ${body.id}: ${err instanceof Error ? err.message : String(err)}`);
+          log.warn(isCredentialBearingAction(body.action)
+            ? '[daemon] Failed to dispatch credential command'
+            : `[daemon] Failed to dispatch command ${body.id}: ${err instanceof Error ? err.message : String(err)}`);
         };
         try {
           route.connection!.ws.send(JSON.stringify(body), (err?: Error) => {
@@ -535,7 +623,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const commandFailure = err instanceof DaemonCommandFailure ? err : null;
       jsonResponse(res, commandFailure?.status ?? (err instanceof Error && err.message.includes('timeout') ? 408 : 400), {
         ok: false,
-        error: err instanceof Error ? err.message : 'Invalid request',
+        error: err instanceof SyntaxError ? 'Invalid request' : err instanceof Error ? err.message : 'Invalid request',
         ...(commandFailure?.errorCode ? { errorCode: commandFailure.errorCode } : {}),
         ...(commandFailure?.errorHint ? { errorHint: commandFailure.errorHint } : {}),
       });
@@ -558,11 +646,12 @@ const wss = new WebSocketServer({
     // ws://localhost:19825/ext and impersonate the Extension.  Real Chrome
     // Extensions send origin chrome-extension://<id>.
     const origin = req.headers['origin'] as string | undefined;
-    return !origin || origin.startsWith('chrome-extension://');
+    return !origin || chromeExtensionIdFromOrigin(origin) !== null;
   },
 });
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  const extensionId = chromeExtensionIdFromOrigin(req.headers['origin']);
   log.info('[daemon] Extension connected');
 
   // ── Heartbeat: ping every 15s, close if 2 pongs missed ──
@@ -592,7 +681,7 @@ wss.on('connection', (ws: WebSocket) => {
 
       // Handle hello message from extension (version handshake)
       if (msg.type === 'hello') {
-        const connection = registerExtensionConnection(ws, msg.contextId);
+        const connection = registerExtensionConnection(ws, msg.contextId, extensionId);
         connection.extensionVersion = typeof msg.version === 'string' ? msg.version : null;
         connection.extensionCompatRange = typeof msg.compatRange === 'string' ? msg.compatRange : null;
         connection.lastSeenAt = Date.now();
@@ -614,20 +703,18 @@ wss.on('connection', (ws: WebSocket) => {
       // keeps the MV3 service worker alive; nothing to do here.
       if (msg.type === 'ping') return;
 
+      if (isAutofillRequestMessage(msg)) {
+        handleAutofillRequest(ws, msg);
+        return;
+      }
+
       // Handle command results
       const p = pending.get(msg.id);
       if (p) {
         settlePending(msg.id, p, { data: msg });
       }
-    } catch (err) {
-      // Malformed message from the extension. Surface so protocol drift /
-      // version skew between daemon and extension shows up in the log
-      // instead of presenting as a generic command timeout downstream.
-      const sample = data.toString().slice(0, 200);
-      log.warn(
-        `[daemon] Ignoring malformed WS message from extension: ` +
-        `${err instanceof Error ? err.message : String(err)} (first 200 chars: ${JSON.stringify(sample)})`,
-      );
+    } catch {
+      log.warn('[daemon] Ignoring malformed WS message from extension');
     }
   });
 

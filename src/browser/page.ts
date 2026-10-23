@@ -9,16 +9,18 @@
  * page-scoped operations target the correct page without guessing.
  */
 
-import type { BrowserCookie, BrowserDownloadWaitResult, BrowserEvaluateFunction, ScreenshotOptions } from '../types.js';
+import type { BrowserCookie, BrowserCredentialFillOptions, BrowserCredentialFillResult, BrowserDownloadWaitResult, BrowserEvaluateFunction, ScreenshotOptions } from '../types.js';
 import { sendCommand, sendCommandFull } from './daemon-client.js';
 import { buildEvaluateExpression } from './utils.js';
-import { saveBase64ToFile } from '../utils.js';
+import { saveBase64ToFile, sleep } from '../utils.js';
 import { generateStealthJs } from './stealth.js';
 import { waitForDomStableJs } from './dom-helpers.js';
 import { CDPBasePage, NativeInputVisibilityError } from './base-page.js';
 import { classifyBrowserError } from './errors.js';
 import { CommandExecutionError } from '../errors.js';
 import { log } from '../logger.js';
+import { BROWSER_VIEWPORT_METRICS_SCRIPT, clickScreenPoint, viewportPointToScreenPoint, type BrowserViewportMetrics } from './system-input.js';
+import { loadBrowserAutofillEntries, readBrowserAutofillCredential, selectBrowserAutofillEntry } from './autofill.js';
 
 function isUnsupportedNetworkCaptureError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
@@ -52,6 +54,7 @@ export class Page extends CDPBasePage {
     private readonly siteSession?: 'ephemeral' | 'persistent',
     /** Soft profile preference (config default) — daemon arbitrates; see profileRouteParams. */
     public readonly preferredContextId?: string,
+    private readonly tabPlacement?: 'owned-container' | 'existing-window',
   ) {
     super();
     this._idleTimeout = idleTimeout;
@@ -63,7 +66,7 @@ export class Page extends CDPBasePage {
   private _networkCaptureWarned = false;
 
   /** Helper: spread session into command params */
-  private _sessionOpts(): { session: string; surface: 'browser' | 'adapter'; idleTimeout?: number; contextId?: string; preferredContextId?: string; windowMode?: 'foreground' | 'background'; siteSession?: 'ephemeral' | 'persistent' } {
+  private _sessionOpts(): { session: string; surface: 'browser' | 'adapter'; idleTimeout?: number; contextId?: string; preferredContextId?: string; windowMode?: 'foreground' | 'background'; siteSession?: 'ephemeral' | 'persistent'; tabPlacement?: 'owned-container' | 'existing-window' } {
     return {
       session: this.session,
       surface: this.surface,
@@ -72,6 +75,7 @@ export class Page extends CDPBasePage {
       ...(this._idleTimeout != null && { idleTimeout: this._idleTimeout }),
       ...(this.windowMode && { windowMode: this.windowMode }),
       ...(this.siteSession && { siteSession: this.siteSession }),
+      ...(this.tabPlacement && { tabPlacement: this.tabPlacement }),
     };
   }
 
@@ -86,6 +90,7 @@ export class Page extends CDPBasePage {
       ...(this._idleTimeout != null && { idleTimeout: this._idleTimeout }),
       ...(this.windowMode && { windowMode: this.windowMode }),
       ...(this.siteSession && { siteSession: this.siteSession }),
+      ...(this.tabPlacement && { tabPlacement: this.tabPlacement }),
     };
   }
 
@@ -113,6 +118,7 @@ export class Page extends CDPBasePage {
     if (result.page) {
       this._page = result.page;
     }
+    await this._maybeFillConfiguredCredential(url);
     this._lastUrl = url;
     // Inject stealth + settle in a single round-trip instead of two sequential exec calls.
     // The stealth guard flag prevents double-injection; settle uses DOM stability detection.
@@ -347,6 +353,63 @@ export class Page extends CDPBasePage {
     }
   }
 
+  async fillCredentials(options: BrowserCredentialFillOptions): Promise<BrowserCredentialFillResult> {
+    return await sendCommand('credential-fill', {
+      username: options.username,
+      password: options.password,
+      allowedHosts: options.allowedHosts,
+      usernameSelectors: options.usernameSelectors,
+      passwordSelectors: options.passwordSelectors,
+      activateTextPatterns: options.activateTextPatterns,
+      submitSelectors: options.submitSelectors,
+      submit: options.submit,
+      ...this._cmdOpts(),
+    }) as BrowserCredentialFillResult;
+  }
+
+  private async _maybeFillConfiguredCredential(targetUrl: string): Promise<void> {
+    if (!this.contextId) return;
+    const entries = loadBrowserAutofillEntries();
+    if (entries.length === 0) return;
+
+    let currentUrl = targetUrl;
+    try {
+      const value = await sendCommand('exec', {
+        code: buildEvaluateExpression('location.href'),
+        ...this._cmdOpts(),
+      });
+      if (typeof value === 'string' && value.trim()) currentUrl = value;
+    } catch {
+      // The requested URL remains a safe fallback for matching.
+    }
+
+    const entry = selectBrowserAutofillEntry(entries, this.contextId, currentUrl)
+      ?? selectBrowserAutofillEntry(entries, this.contextId, targetUrl);
+    if (!entry) return;
+    const credential = readBrowserAutofillCredential(entry);
+    if (!credential) return;
+
+    for (const delayMs of [0, 500, 1200, 2500]) {
+      if (delayMs > 0) await sleep(delayMs);
+      try {
+        const result = await this.fillCredentials({
+          username: credential.username,
+          password: credential.password,
+          allowedHosts: [...entry.allowedHosts],
+          usernameSelectors: entry.usernameSelectors ? [...entry.usernameSelectors] : undefined,
+          passwordSelectors: entry.passwordSelectors ? [...entry.passwordSelectors] : undefined,
+          activateTextPatterns: entry.activateTextPatterns ? [...entry.activateTextPatterns] : undefined,
+          submitSelectors: entry.submitSelectors ? [...entry.submitSelectors] : undefined,
+          submit: entry.submit === true,
+        });
+        if (result.username_filled && result.password_filled) return;
+        if (result.reason && result.reason !== 'login_inputs_not_found' && result.reason !== 'host_not_allowed') return;
+      } catch {
+        return;
+      }
+    }
+  }
+
   async frames(): Promise<Array<{ index: number; frameId: string; url: string; name: string }>> {
     const result = await sendCommand('frames', { ...this._cmdOpts() });
     return Array.isArray(result) ? result : [];
@@ -355,6 +418,12 @@ export class Page extends CDPBasePage {
   async evaluateInFrame(js: string, frameIndex: number): Promise<unknown> {
     const code = buildEvaluateExpression(js);
     return sendCommand('exec', { code, frameIndex, ...this._cmdOpts() });
+  }
+
+  async systemClick(x: number, y: number): Promise<void> {
+    await this.assertNativeInputVisible();
+    const metrics = await this.evaluate<BrowserViewportMetrics>(BROWSER_VIEWPORT_METRICS_SCRIPT);
+    await clickScreenPoint(viewportPointToScreenPoint(metrics, { x, y }));
   }
 
   async cdp(method: string, params: Record<string, unknown> = {}): Promise<unknown> {

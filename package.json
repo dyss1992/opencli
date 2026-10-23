@@ -1,6 +1,6 @@
 {
   "name": "@jackwener/opencli",
-  "version": "2.0.2",
+  "version": "2.0.2+gumo.20261023.1",
   "publishConfig": {
     "access": "public",
     "provenance": true
@@ -12,7 +12,7 @@
   "type": "module",
   "main": "dist/src/main.js",
   "bin": {
-    "opencli": "dist/src/main.js"
+    "opencli": "bin/opencli-gumo"
   },
   "exports": {
     ".": "./dist/src/main.js",
@@ -39,7 +39,8 @@
     "README.md",
     "LICENSE",
     "!**/*.test.*",
-    "!**/__fixtures__/"
+    "!**/__fixtures__/",
+    "bin/"
   ],
   "scripts": {
     "dev": "tsx src/main.ts",

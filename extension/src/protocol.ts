@@ -17,6 +17,8 @@ export type Action =
   | 'sessions'
   | 'set-file-input'
   | 'insert-text'
+  | 'credential-fill'
+  | 'credential-autofill'
   | 'bind'
   | 'network-capture-start'
   | 'network-capture-read'
@@ -46,7 +48,7 @@ export interface Command {
   /** URL to navigate to (navigate action) */
   url?: string;
   /** Sub-operation for tabs: list, new, close, select */
-  op?: 'list' | 'new' | 'close' | 'select';
+  op?: 'list' | 'new' | 'close' | 'select' | 'snapshot';
   /** Tab index for tabs select/close */
   index?: number;
   /** Cookie domain filter */
@@ -67,6 +69,14 @@ export interface Command {
   selector?: string;
   /** Raw text payload for insert-text action */
   text?: string;
+  username?: string;
+  password?: string;
+  allowedHosts?: string[];
+  usernameSelectors?: string[];
+  passwordSelectors?: string[];
+  activateTextPatterns?: string[];
+  submitSelectors?: string[];
+  submit?: boolean;
   /** URL substring filter pattern for network capture actions */
   pattern?: string;
   /** Download wait timeout in milliseconds */
@@ -77,6 +87,7 @@ export interface Command {
   cdpParams?: Record<string, unknown>;
   /** Window foreground/background policy for owned Browser Bridge containers. */
   windowMode?: 'foreground' | 'background';
+  tabPlacement?: 'owned-container' | 'existing-window';
   /** Custom idle timeout in seconds for this session. Overrides the default. */
   idleTimeout?: number;
   /** Frame index for cross-frame operations (0-based, from 'frames' action) */

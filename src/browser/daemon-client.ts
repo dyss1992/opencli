@@ -5,6 +5,7 @@
  */
 
 import { sleep } from '../utils.js';
+import { resolveBrowserTabPlacementFromEnv, type BrowserTabPlacement } from './tab-placement.js';
 import type { SlotGrantData, SlotPolicy } from '../site-slots.js';
 import { BrowserConnectError, SessionBusyError } from '../errors.js';
 import { COMMAND_RESULT_UNKNOWN_CODE, COMMAND_RESULT_UNKNOWN_HINT } from '../daemon-utils.js';
@@ -124,6 +125,11 @@ const HTTP_TIMEOUT_MARGIN_MS = 10_000;
 
 let _userCommandTimeoutSeconds: number | null = null;
 
+function configuredDefaultCommandTimeoutSeconds(): number {
+  const raw = Number.parseInt(process.env.OPENCLI_BROWSER_COMMAND_TIMEOUT ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? Math.max(DEFAULT_COMMAND_TIMEOUT_SECONDS, raw) : DEFAULT_COMMAND_TIMEOUT_SECONDS;
+}
+
 /**
  * Propagate the user's `--timeout` down to the transport layer. Without this
  * the daemon/HTTP deadlines stay at their defaults and a long-running command
@@ -134,7 +140,7 @@ export function setDaemonCommandTimeoutSeconds(seconds: number | null): void {
 }
 
 function effectiveCommandTimeoutSeconds(params: Omit<DaemonCommand, 'id' | 'action'>): number {
-  const base = _userCommandTimeoutSeconds ?? DEFAULT_COMMAND_TIMEOUT_SECONDS;
+  const base = _userCommandTimeoutSeconds ?? configuredDefaultCommandTimeoutSeconds();
   if (typeof params.timeoutMs === 'number' && params.timeoutMs > 0) {
     return Math.max(base, Math.ceil((params.timeoutMs + EXTENSION_OP_TIMEOUT_MARGIN_MS) / 1000));
   }
@@ -222,7 +228,7 @@ function isPreConnectFetchError(err: unknown): boolean {
 
 export interface DaemonCommand extends Partial<SlotPolicy> {
   id: string;
-  action: 'chrome-call' | 'chrome-describe' | 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'close-owned-tab' | 'set-file-input' | 'insert-text' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'wait-download' | 'cdp' | 'frames' | 'lease-release' | 'slot-acquire';
+  action: 'chrome-call' | 'chrome-describe' | 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'close-owned-tab' | 'set-file-input' | 'insert-text' | 'credential-fill' | 'credential-autofill' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'wait-download' | 'cdp' | 'frames' | 'lease-release' | 'slot-acquire';
   retainIncomplete?: boolean;
   /** slot-acquire: pooled site and queue wait budget (policy fields via SlotPolicy). */
   site?: string;
@@ -254,6 +260,14 @@ export interface DaemonCommand extends Partial<SlotPolicy> {
   selector?: string;
   /** Raw text payload for insert-text action */
   text?: string;
+  username?: string;
+  password?: string;
+  allowedHosts?: string[];
+  usernameSelectors?: string[];
+  passwordSelectors?: string[];
+  activateTextPatterns?: string[];
+  submitSelectors?: string[];
+  submit?: boolean;
   /** URL substring filter pattern for network capture */
   pattern?: string;
   /** Download wait timeout in milliseconds */
@@ -262,6 +276,7 @@ export interface DaemonCommand extends Partial<SlotPolicy> {
   cdpParams?: Record<string, unknown>;
   /** Window foreground/background policy for owned Browser Bridge containers. */
   windowMode?: 'foreground' | 'background';
+  tabPlacement?: BrowserTabPlacement;
   /** Custom idle timeout in seconds for this session. Overrides the default. */
   idleTimeout?: number;
   /** Frame index for cross-frame operations (0-based, from 'frames' action) */
@@ -355,7 +370,7 @@ async function sendCommandRaw(
 ): Promise<DaemonResult> {
   const timeoutSeconds = effectiveCommandTimeoutSeconds(params);
   const deadlineAt = Date.now() + timeoutSeconds * 1000;
-  const rawWindowMode = process.env.OPENCLI_WINDOW;
+  const rawWindowMode = process.env.OPENCLI_WINDOW || process.env.OPENCLI_BROWSER_WINDOW_MODE;
   const envWindowMode = rawWindowMode === 'foreground' || rawWindowMode === 'background'
     ? rawWindowMode
     : undefined;
@@ -367,6 +382,7 @@ async function sendCommandRaw(
   const contextId = routing.contextId;
   const preferredContextId = routing.preferredContextId;
   const windowMode = params.windowMode ?? envWindowMode;
+  const tabPlacement = params.tabPlacement ?? resolveBrowserTabPlacementFromEnv();
   // Override the owned session idle timeout, not the container window lifetime.
   // Explicit close still releases ephemeral sessions; persistent adapter sessions
   // and borrowed bound tabs ignore idle timeouts. Per-command values take priority.
@@ -417,6 +433,7 @@ async function sendCommandRaw(
       ...(contextId && { contextId }),
       ...(preferredContextId && { preferredContextId }),
       ...(windowMode && { windowMode }),
+      tabPlacement,
       ...(idleTimeout !== undefined && { idleTimeout }),
       // Carry the run identity so the daemon can acquire/refresh the write
       // lease on the persistent site session. The same runId across every exec

@@ -205,6 +205,7 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
     throw new Error(`attach failed: ${lastError}${hint}`);
   }
   attached.add(tabId);
+  await sendDebuggerCommand({tabId}, 'Page.enable');
 
   try {
     await sendDebuggerCommand({ tabId }, 'Runtime.enable');
@@ -857,6 +858,9 @@ export function registerListeners(): void {
     }
   });
   chrome.debugger.onEvent.addListener(async (source, method, params) => {
+    if (method === 'Page.javascriptDialogOpening' && (params as {type?: string} | undefined)?.type === 'beforeunload' && source.tabId !== undefined && attached.has(source.tabId)) {
+      await sendDebuggerCommand({tabId: source.tabId}, 'Page.handleJavaScriptDialog', {accept: true}).catch(() => {});
+    }
     const tabId = source.tabId;
     if (!tabId) return;
     const state = networkCaptures.get(tabId);

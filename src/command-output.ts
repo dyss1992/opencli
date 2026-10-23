@@ -1,6 +1,7 @@
 /** CLI wire format. Human-readable exports remain available through --format. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { toEnvelope, type ErrorEnvelope } from './errors.js';
+import { formatGumoSuccess } from './gumo-compat.js';
 
 export interface CommandOutputCapture {
   result?: unknown;
@@ -16,7 +17,7 @@ export function captureCommandOutput<T>(capture: CommandOutputCapture, action: (
 export function emitResult(data: unknown): void {
   const capture = outputCapture.getStore();
   if (capture) capture.result = data;
-  console.log(JSON.stringify({ ok: true, data: data ?? null }));
+  console.log(JSON.stringify(formatGumoSuccess(data)));
 }
 
 export function emitFailure(error: unknown, exitCode?: number): void {

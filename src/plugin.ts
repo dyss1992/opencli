@@ -36,12 +36,12 @@ function getHomeDir(): string {
 
 /** Path to the lock file that tracks installed plugin versions. */
 export function getLockFilePath(): string {
-  return path.join(getHomeDir(), '.opencli', 'plugins.lock.json');
+  return path.join(process.env.OPENCLI_CONFIG_DIR || path.join(getHomeDir(), '.opencli'), 'plugins.lock.json');
 }
 
 /** Monorepo clones directory: ~/.opencli/monorepos/ */
 export function getMonoreposDir(): string {
-  return path.join(getHomeDir(), '.opencli', 'monorepos');
+  return path.join(process.env.OPENCLI_CONFIG_DIR || path.join(getHomeDir(), '.opencli'), 'monorepos');
 }
 
 export type PluginSourceRecord =

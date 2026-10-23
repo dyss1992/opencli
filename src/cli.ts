@@ -18,6 +18,7 @@ import { registerPluginCommands } from './commands/plugin.js';
 import { registerProfileCommands } from './commands/profile.js';
 import { printCompletionScript } from './completion.js';
 import { CliError, EXIT_CODES } from './errors.js';
+import { normalizeGumoBrowserArgv } from './gumo-compat.js';
 import { formatRootAdapterHelpText, installCommanderNamespaceStructuredHelp, installStructuredHelp, rootHelpData, type RootAdapterGroups } from './help.js';
 import { normalizeOutputFormat } from './output-format.js';
 import { render as renderOutput } from './output.js';
@@ -197,7 +198,12 @@ export function createProgram(BUILTIN_CLIS: string, USER_CLIS: string): Command 
 }
 
 export async function runCli(BUILTIN_CLIS: string, USER_CLIS: string): Promise<void> {
-  try { await createProgram(BUILTIN_CLIS, USER_CLIS).parseAsync(); }
+  try {
+    const program = createProgram(BUILTIN_CLIS, USER_CLIS);
+    const browser = program.commands.find(command => command.name() === 'browser');
+    const browserCommandNames = new Set(browser?.commands.map(command => command.name()));
+    await program.parseAsync(normalizeGumoBrowserArgv(process.argv, browserCommandNames));
+  }
   catch (error) {
     const code = (error as { code?: string }).code;
     if (code === 'commander.helpDisplayed' || code === 'commander.version') return;

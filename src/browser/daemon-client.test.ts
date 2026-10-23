@@ -25,6 +25,24 @@ describe('daemon-client', () => {
     setDaemonRunContext(null);
   });
 
+  it('carries the existing-window default and the configured long command budget', async () => {
+    vi.stubEnv('OPENCLI_BROWSER_COMMAND_TIMEOUT', '1800');
+    vi.stubEnv('OPENCLI_BROWSER_WINDOW_MODE', 'background');
+    vi.stubEnv('OPENCLI_WINDOW', '');
+    vi.mocked(fetch).mockResolvedValue({status:200,json:async()=>({id:'fixture',ok:true,data:'ok'})} as Response);
+    await sendCommand('exec',{session:'fixture',code:'1'});
+    const body=JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));
+    expect(body.timeout).toBe(1800);expect(body.tabPlacement).toBe('existing-window');expect(body.windowMode).toBe('background');
+  });
+
+  it('uses an explicit command budget before the configured environment budget', async () => {
+    vi.stubEnv('OPENCLI_BROWSER_COMMAND_TIMEOUT','1800');setDaemonCommandTimeoutSeconds(240);
+    vi.mocked(fetch).mockResolvedValue({status:200,json:async()=>({id:'fixture',ok:true,data:'ok'})} as Response);
+    try {await sendCommand('exec',{session:'fixture',code:'1',tabPlacement:'owned-container'});
+      const body=JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body));expect(body.timeout).toBe(240);expect(body.tabPlacement).toBe('owned-container');
+    } finally {setDaemonCommandTimeoutSeconds(null);}
+  });
+
   it('fetchDaemonStatus sends the shared status request and returns parsed data', async () => {
     const status = {
       ok: true,

@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+// Keep scheduled Gumo jobs compatible; use OPENCLI_GUMO_COMPAT=0 for native output.
+if (!process.env.OPENCLI_GUMO_COMPAT) process.env.OPENCLI_GUMO_COMPAT = '1';
+await import('../dist/src/main.js');

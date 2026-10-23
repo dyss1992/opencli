@@ -20,6 +20,7 @@ import { waitForDomStableJs } from './dom-helpers.js';
 import { isRecord, saveBase64ToFile } from '../utils.js';
 import { CommandExecutionError } from '../errors.js';
 import { CDPBasePage } from './base-page.js';
+import { BROWSER_VIEWPORT_METRICS_SCRIPT, clickScreenPoint, viewportPointToScreenPoint, type BrowserViewportMetrics } from './system-input.js';
 
 export interface CDPTarget {
   type?: string;
@@ -527,6 +528,12 @@ class CDPPage extends CDPBasePage {
 
   async cdp(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     return this.bridge.send(method, params);
+  }
+
+  async systemClick(x: number, y: number): Promise<void> {
+    await this.assertNativeInputVisible();
+    const metrics = await this.evaluate<BrowserViewportMetrics>(BROWSER_VIEWPORT_METRICS_SCRIPT);
+    await clickScreenPoint(viewportPointToScreenPoint(metrics, { x, y }));
   }
 
   async insertText(text: string): Promise<void> {

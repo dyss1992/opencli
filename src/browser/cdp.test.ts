@@ -43,6 +43,7 @@ vi.mock('ws', () => ({
 }));
 
 import { CDPBridge, CDP_REQUEST_BODY_CAPTURE_LIMIT } from './cdp.js';
+import * as systemInput from './system-input.js';
 
 describe('CDPBridge cookies', () => {
   beforeEach(() => {
@@ -377,5 +378,34 @@ describe('CDPPage.evaluateOnce', () => {
     expect(send).toHaveBeenCalledTimes(1);
     await bridge.close();
     vi.unstubAllEnvs();
+  });
+});
+
+
+describe('CDP systemClick with mocked input', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('checks visibility and converts viewport coordinates without moving the real mouse', async () => {
+    const click = vi.spyOn(systemInput, 'clickScreenPoint').mockResolvedValue();
+    const bridge = new CDPBridge();
+    vi.spyOn(bridge, 'send').mockResolvedValue({});
+    const page = await bridge.connect({ cdpEndpoint: 'ws://fixture.invalid/devtools/page/fixture' });
+    vi.spyOn(page, 'evaluate').mockResolvedValueOnce('visible').mockResolvedValueOnce({
+      screenX: 100, screenY: 50, outerWidth: 1200, outerHeight: 900, innerWidth: 1180, innerHeight: 760,
+    });
+    await page.systemClick!(90, 200);
+    expect(click).toHaveBeenCalledWith({ x: 200, y: 380 });
+    await bridge.close();
+  });
+
+  it('does not invoke system input for hidden pages', async () => {
+    const click = vi.spyOn(systemInput, 'clickScreenPoint').mockResolvedValue();
+    const bridge = new CDPBridge();
+    vi.spyOn(bridge, 'send').mockResolvedValue({});
+    const page = await bridge.connect({ cdpEndpoint: 'ws://fixture.invalid/devtools/page/fixture' });
+    vi.spyOn(page, 'evaluate').mockResolvedValueOnce('hidden');
+    await expect(page.systemClick!(90, 200)).rejects.toThrow();
+    expect(click).not.toHaveBeenCalled();
+    await bridge.close();
   });
 });
