@@ -5,6 +5,7 @@
  */
 
 export type Action =
+  | 'profile-rebind'
   | 'chrome-call'
   | 'chrome-describe'
   | 'exec'
@@ -31,6 +32,8 @@ export interface Command {
   id: string;
   /** Action type */
   action: Action;
+  expectedContextId?: string;
+  rebindContextId?: string;
   /** Keep in-flight network capture entries for a later completed read. */
   retainIncomplete?: boolean;
   /** Target page identity (targetId). Cross-layer contract with the daemon. */

@@ -121,3 +121,53 @@ describe('daemon credential transport without sockets, configuration files, or k
     expect(JSON.stringify(res.end.mock.calls)).not.toContain(fixture.password);
   });
 });
+
+describe('daemon profile rebind with mocked sockets only', () => {
+  const rebind = { id: 'rebind-fixture', action: 'profile-rebind', contextId: 'new12345', expectedContextId: 'new12345', rebindContextId: 'old12345' };
+
+  it('routes explicitly to the new connection without a page session or credential access', async () => {
+    const socket = connect(`chrome-extension://${otherId}`, 'new12345');
+    const res = await command(rebind);
+    expect(socket.send).toHaveBeenCalledWith(JSON.stringify(rebind), expect.any(Function));
+    socket.emit('message', Buffer.from(JSON.stringify({ id: rebind.id, ok: true, data: { contextId: 'old12345', previousContextId: 'new12345' } })));
+    for (let count = 0; count < 8; count++) await Promise.resolve();
+    expect(JSON.parse(res.end.mock.calls[0][0])).toMatchObject({ ok: true, data: { contextId: 'old12345' } });
+    expect(state.config).not.toHaveBeenCalled();
+    expect(state.credential).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { contextId: undefined }, { expectedContextId: 'oth12345' }, { rebindContextId: 'default' }, { preferredContextId: 'new12345' },
+  ])('rejects implicit routing or invalid expectations before dispatch: %s', async change => {
+    const socket = connect(undefined, 'new12345');
+    const res = await command({ ...rebind, ...change });
+    expect(JSON.parse(res.end.mock.calls[0][0])).toMatchObject({ ok: false, errorCode: 'profile_rebind_invalid' });
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it('does not rebind while the original ID remains online', async () => {
+    const socket = connect(undefined, 'new12345');
+    connect(undefined, 'old12345');
+    const res = await command(rebind);
+    expect(JSON.parse(res.end.mock.calls[0][0])).toMatchObject({ errorCode: 'profile_rebind_target_online' });
+    expect(socket.send).not.toHaveBeenCalled();
+  });
+
+  it('requires all existing commands to settle before rebind', async () => {
+    const socket = connect(undefined, 'new12345');
+    await command({ id: 'work', action: 'exec', contextId: 'new12345', session: 'fixture', code: '1' });
+    const res = await command(rebind);
+    expect(JSON.parse(res.end.mock.calls[0][0])).toMatchObject({ errorCode: 'profile_rebind_busy' });
+    expect(socket.send).toHaveBeenCalledOnce();
+    socket.emit('message', Buffer.from(JSON.stringify({ id: 'work', ok: true })));
+  });
+
+  it('blocks other command dispatch while rebind is awaiting acknowledgement', async () => {
+    const socket = connect(undefined, 'new12345');
+    await command(rebind);
+    const res = await command({ id: 'work', action: 'exec', contextId: 'new12345', session: 'fixture', code: '1' });
+    expect(JSON.parse(res.end.mock.calls[0][0])).toMatchObject({ errorCode: 'profile_rebind_busy' });
+    expect(socket.send).toHaveBeenCalledOnce();
+    socket.emit('message', Buffer.from(JSON.stringify({ id: rebind.id, ok: true })));
+  });
+});

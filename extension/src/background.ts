@@ -16,6 +16,7 @@ import * as identity from './identity';
 import { executeWithJournal } from './journal';
 import { normalizeCredentialFillRequest, runCredentialFillOnTab } from './credential-fill';
 import { createPassiveAutofill } from './passive-autofill';
+import { createProfileRebinder } from './profile-rebind';
 
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -110,6 +111,15 @@ const passiveAutofill = createPassiveAutofill({
   getContextId: getCurrentContextId,
   isSocketOpen: () => ws?.readyState === WebSocket.OPEN,
   send: (payload) => safeSend(ws, payload),
+});
+
+const profileRebinder = createProfileRebinder({
+  ready: () => workerReady,
+  getContextId: getCurrentContextId,
+  isIdle: () => [...activeCommandCounts.values()].every(count => count === 0),
+  storeContextId: async (contextId) => { await chrome.storage.local.set({ [CONTEXT_ID_KEY]: contextId }); },
+  reload: () => chrome.runtime.reload(),
+  schedule: (callback, delayMs) => setTimeout(callback, delayMs),
 });
 
 console.log = (...args: unknown[]) => { _origLog(...args); forwardLog('info', args); };
@@ -212,12 +222,15 @@ async function connectAttempt(): Promise<void> {
       const payload: unknown = JSON.parse(event.data as string);
       if (passiveAutofill.handleDaemonMessage(payload)) return;
       const command = payload as Command;
-      const result = await executeWithJournal(command, handleCommand);
+      const result = command.action === 'profile-rebind'
+        ? await handleCommand(command)
+        : await executeWithJournal(command, handleCommand);
       // The socket may have been replaced while a long command ran. Deliver
       // the result on the freshest open socket — the daemon correlates by id,
       // and the journal replays it if this delivery is lost too.
       const target = ws && ws.readyState === WebSocket.OPEN ? ws : thisWs;
-      safeSend(target, result);
+      const sent = safeSend(target, result);
+      if (command.action === 'profile-rebind') profileRebinder.acknowledge(result, sent);
     } catch {
       console.error('[opencli] Message handling error');
     }
@@ -1395,6 +1408,8 @@ async function fetchDaemonVersion(): Promise<string | null> {
 // ─── Command dispatcher ─────────────────────────────────────────────
 
 async function handleCommand(cmd: Command): Promise<Result> {
+  if (cmd.action === 'profile-rebind') return profileRebinder.prepare(cmd);
+  if (profileRebinder.isPending()) return { id: cmd.id, ok: false, errorCode: 'profile_rebind_busy', error: 'Profile rebinding is pending. Wait for reconnection.' };
   if (cmd.action === 'tabs' && cmd.op === 'snapshot') {
     await workerReady;
     const owned = new Set([...automationSessions.values()].filter(s => s.owned && s.preferredTabId !== null).flatMap(s => s.ownedTabIds ?? [s.preferredTabId!]));

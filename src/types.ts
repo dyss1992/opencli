@@ -67,6 +67,8 @@ export interface FetchJsonOptions {
   timeoutMs?: number;
 }
 
+export type { ProfileRebindRequest, ProfileRebindReceipt, ProfileRebindBinding } from './profile-rebind.js';
+
 export interface BrowserCredentialFillOptions {
   username: string;
   password: string;

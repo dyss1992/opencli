@@ -230,6 +230,7 @@ function createChromeMock() {
       },
     },
     runtime: {
+      reload: vi.fn(),
       onInstalled: { addListener: vi.fn() } as Listener<() => void>,
       onStartup: { addListener: vi.fn() } as Listener<() => void>,
       onMessage: { addListener: vi.fn() } as Listener<(msg: unknown, sender: unknown, sendResponse: (value: unknown) => void) => void>,
@@ -274,6 +275,34 @@ describe('background tab isolation', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it('rebinds only the public context key and sends its ACK before reload without journaling or tab changes', async () => {
+    const { chrome } = createChromeMock();
+    await chrome.storage.local.set({ opencli_context_id_v1: 'new12345' });
+    vi.stubGlobal('chrome', chrome);
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true })));
+    await import('./background');
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const socket = MockWebSocket.instances[0];
+    socket.readyState = MockWebSocket.OPEN;
+    chrome.storage.local.set.mockClear();
+    chrome.storage.local.remove.mockClear();
+    chrome.storage.session.set.mockClear();
+    chrome.tabs.create.mockClear();
+    chrome.tabs.update.mockClear();
+    vi.useFakeTimers();
+    await socket.onmessage!({ data: JSON.stringify({ id: 'rebind', action: 'profile-rebind', contextId: 'new12345', expectedContextId: 'new12345', rebindContextId: 'old12345' }) });
+    expect(chrome.storage.local.set).toHaveBeenCalledExactlyOnceWith({ opencli_context_id_v1: 'old12345' });
+    expect(chrome.storage.local.remove).not.toHaveBeenCalled();
+    expect(chrome.storage.session.set).not.toHaveBeenCalled();
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.cookies.getAll).not.toHaveBeenCalled();
+    expect(socket.sent.map(value => JSON.parse(value))).toContainEqual({ id: 'rebind', ok: true, data: { contextId: 'old12345', previousContextId: 'new12345' } });
+    expect(chrome.runtime.reload).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(chrome.runtime.reload).toHaveBeenCalledOnce();
   });
 
   it('keeps existing-window creation and logical selection inactive and ungrouped', async () => {

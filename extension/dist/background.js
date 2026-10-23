@@ -1249,6 +1249,36 @@ ${rawUrl}`;
   return { handleDaemonMessage, registerListeners, scanOpenTabs, scheduleForTab, triggerForTab };
 }
 
+const validId = (value) => typeof value === "string" && /^[a-z0-9]{8}$/.test(value);
+function createProfileRebinder(dependencies) {
+  let pending = null;
+  return {
+    isPending: () => pending !== null,
+    async prepare(command) {
+      await dependencies.ready();
+      if (pending || !dependencies.isIdle()) return { id: command.id, ok: false, errorCode: "profile_rebind_busy", error: "The extension is busy. Stop and inspect." };
+      const current = await dependencies.getContextId();
+      if (!validId(command.expectedContextId) || !validId(command.rebindContextId) || command.contextId !== command.expectedContextId || current !== command.expectedContextId || current === command.rebindContextId) {
+        return { id: command.id, ok: false, errorCode: "profile_rebind_invalid", error: "The expected profile ID does not match this extension." };
+      }
+      if (pending || !dependencies.isIdle()) return { id: command.id, ok: false, errorCode: "profile_rebind_busy", error: "The extension is busy. Stop and inspect." };
+      pending = { id: command.id, stored: false, scheduled: false };
+      try {
+        await dependencies.storeContextId(command.rebindContextId);
+        pending.stored = true;
+        return { id: command.id, ok: true, data: { contextId: command.rebindContextId, previousContextId: current } };
+      } catch {
+        return { id: command.id, ok: false, errorCode: "profile_rebind_storage_failed", error: "Profile storage could not be confirmed. Stop and inspect; do not retry." };
+      }
+    },
+    acknowledge(result, sent) {
+      if (!sent || !result.ok || !pending?.stored || pending.id !== result.id || pending.scheduled) return;
+      pending.scheduled = true;
+      dependencies.schedule(() => dependencies.reload(), 250);
+    }
+  };
+}
+
 let ws = null;
 let reconnectTimer = null;
 let reconnectAttempts = 0;
@@ -1323,6 +1353,16 @@ const passiveAutofill = createPassiveAutofill({
   getContextId: getCurrentContextId,
   isSocketOpen: () => ws?.readyState === WebSocket.OPEN,
   send: (payload) => safeSend(ws, payload)
+});
+const profileRebinder = createProfileRebinder({
+  ready: () => workerReady,
+  getContextId: getCurrentContextId,
+  isIdle: () => [...activeCommandCounts.values()].every((count) => count === 0),
+  storeContextId: async (contextId) => {
+    await chrome.storage.local.set({ [CONTEXT_ID_KEY]: contextId });
+  },
+  reload: () => chrome.runtime.reload(),
+  schedule: (callback, delayMs) => setTimeout(callback, delayMs)
 });
 console.log = (...args) => {
   _origLog(...args);
@@ -1399,9 +1439,10 @@ async function connectAttempt() {
       const payload = JSON.parse(event.data);
       if (passiveAutofill.handleDaemonMessage(payload)) return;
       const command = payload;
-      const result = await executeWithJournal(command, handleCommand);
+      const result = command.action === "profile-rebind" ? await handleCommand(command) : await executeWithJournal(command, handleCommand);
       const target = ws && ws.readyState === WebSocket.OPEN ? ws : thisWs;
-      safeSend(target, result);
+      const sent = safeSend(target, result);
+      if (command.action === "profile-rebind") profileRebinder.acknowledge(result, sent);
     } catch {
       console.error("[opencli] Message handling error");
     }
@@ -2242,6 +2283,8 @@ async function fetchDaemonVersion() {
   }
 }
 async function handleCommand(cmd) {
+  if (cmd.action === "profile-rebind") return profileRebinder.prepare(cmd);
+  if (profileRebinder.isPending()) return { id: cmd.id, ok: false, errorCode: "profile_rebind_busy", error: "Profile rebinding is pending. Wait for reconnection." };
   if (cmd.action === "tabs" && cmd.op === "snapshot") {
     await workerReady;
     const owned = new Set([...automationSessions.values()].filter((s) => s.owned && s.preferredTabId !== null).flatMap((s) => s.ownedTabIds ?? [s.preferredTabId]));

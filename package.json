@@ -1,6 +1,6 @@
 {
   "name": "@jackwener/opencli",
-  "version": "2.0.2+gumo.20261023.1",
+  "version": "2.0.2+gumo.20261024.1",
   "publishConfig": {
     "access": "public",
     "provenance": true
@@ -16,6 +16,7 @@
   },
   "exports": {
     ".": "./dist/src/main.js",
+    "./profile-rebind": "./dist/src/profile-rebind.js",
     "./registry": "./dist/src/registry-api.js",
     "./errors": "./dist/src/errors.js",
     "./types": "./dist/src/types.js",

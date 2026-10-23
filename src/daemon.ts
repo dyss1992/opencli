@@ -27,6 +27,7 @@ import { EXIT_CODES } from './errors.js';
 import { log } from './logger.js';
 import { PKG_VERSION } from './version.js';
 import { DEFAULT_CONTEXT_ID } from './browser/profile.js';
+import { ProfileRebindError, validateProfileRebind } from './profile-rebind.js';
 import { recordExtensionVersion } from './update-check.js';
 import {
   chromeExtensionIdFromOrigin,
@@ -442,6 +443,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       if (!body.id) {
         jsonResponse(res, 400, { ok: false, error: 'Missing command id' });
         return;
+      }
+
+      if ([...pending.values()].some(entry => entry.action === 'profile-rebind')) {
+        jsonResponse(res, 409, { id: body.id, ok: false, errorCode: 'profile_rebind_busy', error: 'A profile rebind is still in flight. Wait for its result.' });
+        return;
+      }
+      if (body.action === 'profile-rebind') {
+        try {
+          validateProfileRebind(body, activeProfiles().map(profile => profile.contextId), pending.size);
+        } catch (error) {
+          if (!(error instanceof ProfileRebindError)) throw error;
+          jsonResponse(res, error.code === 'profile_rebind_invalid' ? 400 : 409, { id: body.id, ok: false, errorCode: error.code, error: error.message });
+          return;
+        }
       }
 
       // ─── Session write lease: explicit release ───────────────────────

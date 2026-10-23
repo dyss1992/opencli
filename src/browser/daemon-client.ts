@@ -228,7 +228,9 @@ function isPreConnectFetchError(err: unknown): boolean {
 
 export interface DaemonCommand extends Partial<SlotPolicy> {
   id: string;
-  action: 'chrome-call' | 'chrome-describe' | 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'close-owned-tab' | 'set-file-input' | 'insert-text' | 'credential-fill' | 'credential-autofill' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'wait-download' | 'cdp' | 'frames' | 'lease-release' | 'slot-acquire';
+  expectedContextId?: string;
+  rebindContextId?: string;
+  action: 'profile-rebind' | 'chrome-call' | 'chrome-describe' | 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'close-owned-tab' | 'set-file-input' | 'insert-text' | 'credential-fill' | 'credential-autofill' | 'bind' | 'network-capture-start' | 'network-capture-read' | 'wait-download' | 'cdp' | 'frames' | 'lease-release' | 'slot-acquire';
   retainIncomplete?: boolean;
   /** slot-acquire: pooled site and queue wait budget (policy fields via SlotPolicy). */
   site?: string;
