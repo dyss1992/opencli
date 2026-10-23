@@ -2462,6 +2462,9 @@ async function resolveTab(tabId, leaseKey, initialUrl) {
       }
     } catch (err) {
       if (err instanceof CommandFailure) throw err;
+      if (session.tabPlacement === "existing-window") {
+        throw new CommandFailure("owned_tab_unavailable", "The automation tab could not be resolved. Create a new tab in this session.");
+      }
       await removeLeaseSession(leaseKey);
       if (!session.owned) {
         throw new CommandFailure(

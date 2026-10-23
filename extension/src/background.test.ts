@@ -332,6 +332,15 @@ describe('background tab isolation', () => {
     expect(chrome.windows.create).not.toHaveBeenCalled();expect(chrome.tabs.group).not.toHaveBeenCalled();
   });
 
+  it('keeps existing-window policy and ownership when the preferred tab lookup fails', async () => {
+    const {chrome}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
+    const command={id:'missing',action:'tabs',op:'new',session:'missing',surface:'adapter',tabPlacement:'existing-window'} as const;
+    await mod.__test__.handleCommand(command);chrome.tabs.get.mockRejectedValue(new Error('No tab with id: 10'));
+    expect(await mod.__test__.handleCommand({...command,action:'cdp',cdpMethod:'Runtime.enable'})).toMatchObject({ok:false,errorCode:'owned_tab_unavailable'});
+    expect(mod.__test__.getSession(adapterKey('missing'))?.ownedTabIds).toEqual([10]);
+    expect(chrome.windows.create).not.toHaveBeenCalled();expect(chrome.tabs.create).toHaveBeenCalledTimes(1);
+  });
+
   it('does not ungroup a manually grouped existing-window tab during cleanup', async () => {
     const {chrome,tabs}=createChromeMock();vi.stubGlobal('chrome',chrome);const mod=await import('./background');
     const command={id:'group',action:'tabs',op:'new',session:'group',surface:'adapter',tabPlacement:'existing-window'} as const;
