@@ -36,6 +36,8 @@ import { emitHook, type HookContext } from './hooks.js';
 import { log } from './logger.js';
 import { ObservationSession, exportObservationSession, type ObservationExportResult, type ObservationExportStatus } from './observation/index.js';
 import { resolveAdapterSourcePath } from './adapter-source.js';
+import { createSlidexGuard } from './slidex-auto-try.js';
+import { preparePlatformAccess } from './platform-quota.js';
 
 const _loadedModules = new Map<string, Promise<void>>();
 /** Track mtime of loaded user adapter files for hot-reload in daemon mode. */
@@ -250,7 +252,14 @@ export async function executeCommand(
   await emitHook('onBeforeExecute', hookCtx);
 
   let result: unknown;
+  let quota: Awaited<ReturnType<typeof preparePlatformAccess>> = null;
   try {
+    quota = await preparePlatformAccess(cmd, kwargs, opts.profile);
+    if (quota?.cached) {
+      hookCtx.finishedAt = Date.now();
+      await emitHook('onAfterExecute', hookCtx, quota.cached.value);
+      return quota.cached.value;
+    }
     if (siteSession !== null) {
       const BrowserFactory = getBrowserFactory();
       // Requirement vs preference: --profile / OPENCLI_PROFILE route strictly;
@@ -300,7 +309,12 @@ export async function executeCommand(
       let adapterStillRunning = false as boolean;
       let adapterRun = null as Promise<unknown> | null;
       try {
-      result = await browserSession(BrowserFactory, async (page) => {
+      result = await browserSession(BrowserFactory, async (rawPage) => {
+        const guard = ['taobao', 'qn'].includes(cmd.site) ? createSlidexGuard(rawPage, {
+          profile: contextId ?? (rawPage as { contextId?: string }).contextId ?? '', session, entry: fullName(cmd), access: cmd.access, runId: leaseRun?.runId, onChallenge: quota?.markVerification,
+        }) : null;
+        const page = guard?.page ?? rawPage;
+        const invokeAdapter = async () => {
         const observation = traceMode === 'off'
           ? null
           : new ObservationSession({
@@ -399,10 +413,6 @@ export async function executeCommand(
             await collectObservationEvidence(observation, page).catch(() => {});
             exportTraceArtifact(observation, 'success', undefined, opts.onTraceExport);
           }
-          // Adapter commands are one-shot — release the current tab lease immediately
-          // instead of waiting for the 30s idle timeout. The automation container
-          // window stays open for reuse.
-          if (!keepTab) await page.closeWindow?.().catch(() => {});
           return result;
         } catch (err) {
           if (!commandSettled) adapterStillRunning = true;
@@ -423,11 +433,14 @@ export async function executeCommand(
               exportTraceArtifact(observation, 'failure', err, opts.onTraceExport);
             }
           }
-          // Release the tab lease on failure too — without this, the lease lingers
-          // until the extension's idle timer fires (unreliable on Windows where
-          // MV3 service workers may be suspended before setTimeout triggers).
-          if (!keepTab) await page.closeWindow?.().catch(() => {});
           throw err;
+        }
+      };
+        try {
+          return await (guard ? guard.run(invokeAdapter) : invokeAdapter());
+        } finally {
+          // Classify the result and retain a failed challenge before releasing the tab.
+          if (!keepTab) await page.closeWindow?.().catch(() => {});
         }
       }, { session, ...profileRouting, windowMode, surface: 'adapter', siteSession });
       } catch (err) {
@@ -491,12 +504,14 @@ export async function executeCommand(
       }
     }
   } catch (err) {
+    await quota?.finish(undefined, err);
     hookCtx.error = err;
     hookCtx.finishedAt = Date.now();
     await emitHook('onAfterExecute', hookCtx);
     throw err;
   }
 
+  await quota?.finish(result);
   hookCtx.finishedAt = Date.now();
   await emitHook('onAfterExecute', hookCtx, result);
   return result;
