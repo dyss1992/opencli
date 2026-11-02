@@ -11,10 +11,23 @@ const verification = /\b(?:FAIL_SYS_USER_VALIDATE|MANUAL_VERIFICATION)\b|blockin
 const root = path.join(os.homedir(), 'Git/daily-jobs');
 const stateRoot = path.join(root, 'runtime/slidex');
 const probeScript = `(() => {
-  const visible = e => {const r=e.getBoundingClientRect(),s=getComputedStyle(e);
-    return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'};
+  const visible = e => {
+    if (e.closest('[hidden], [aria-hidden="true"]')) return false;
+    for (let parent=e;parent;parent=parent.parentElement) {
+      const s=getComputedStyle(parent);
+      if (s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity||1)===0) return false;
+    }
+    const r=e.getBoundingClientRect();
+    return r.width>0&&r.height>0;
+  };
+  const challengeFrame = e => {
+    try {
+      const u=new URL(e.src,location.href);
+      return /(?:^|\\/)(?:punish|captcha|_tmd_|_____tmd_____)(?:\\/|$)/i.test(u.pathname);
+    } catch { return false; }
+  };
   const nodes=[...document.querySelectorAll('iframe, .nc_scale, [id^="nc_"][id$="_wrapper"], #baxia-punish')];
-  const node=nodes.find(e=>visible(e)&&(e.tagName!=='IFRAME'||/punish|captcha|_tmd_|x5secdata/i.test(e.src||'')));
+  const node=nodes.find(e=>visible(e)&&(e.tagName!=='IFRAME'||challengeFrame(e)));
   const key=node ? [performance.timeOrigin,location.href,node.src||node.id||node.className].join('|') : '';
   return {url:location.href,title:document.title,visible:!!node,key};
 })()`;
@@ -26,6 +39,14 @@ function textOf(value: unknown): string {
 function digest(value: string): string { return createHash('sha256').update(value).digest('hex'); }
 function stopped(message: string): Error {
   return Object.assign(new Error(message), { code: 'MANUAL_VERIFICATION', slidexStopped: true });
+}
+
+export type SlidexPauseScope = 'publish' | 'order' | 'read';
+export function slidexPauseScope(entry: string, access?: string): SlidexPauseScope {
+  if (/^(?:qn|taobao)[/.]order(?:[-/.]|$)/.test(entry)) return 'order';
+  if (/^(?:qn|taobao)[/.]product-stock$/.test(entry)) return 'read';
+  if (/^taobao[/.](?:publish(?:[-/.]|$)|product-(?:instock-edit|presale-edit)$)/.test(entry)) return 'publish';
+  return access === 'write' ? 'publish' : 'read';
 }
 
 type Context = { profile: string; session: string; entry: string; access: 'read' | 'write'; runId?: string; onChallenge?: () => void };
@@ -72,8 +93,18 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     ['deep-toys', 'chabao-xingxing', 'gumo-studio', 'vnxr339n'].includes(name))?.[0] ?? context.profile;
   const store = ({ 'deep-toys': 'Deep Toys', 'chabao-xingxing': '瑞克莫蒂玩玩具',
     'gumo-studio': 'Gumo Studio', vnxr339n: 'Gumo Studio' } as Record<string, string>)[alias] ?? alias;
-  const pauseFile = path.join(directory, `${digest(store)}.paused.json`);
-  const retainedFile = path.join(directory, `${digest(store)}.retained.json`);
+  const scope = slidexPauseScope(context.entry, context.access);
+  const pauseFile = path.join(directory, `${digest(store)}.${scope}.paused.json`);
+  const legacyPauseFile = path.join(directory, `${digest(store)}.paused.json`);
+  function isPaused() {
+    if (fs.existsSync(pauseFile)) return true;
+    if (!fs.existsSync(legacyPauseFile)) return false;
+    try {
+      const record = JSON.parse(fs.readFileSync(legacyPauseFile, 'utf8'));
+      return record.scope ? record.scope === scope : record.entry ? slidexPauseScope(record.entry, record.access) === scope : true;
+    } catch { return true; }
+  }
+  const retainedFile = path.join(directory, `${digest(store)}.${scope}.retained.json`);
   const attempts: Attempt[] = [];
   let pending: Promise<boolean> | null = null;
   const solve = deps.solve ?? (request => python('solve', request));
@@ -87,10 +118,19 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
   });
 
   function assertRunning() {
-    if (fs.existsSync(pauseFile)) throw stopped(`${store}自动请求已暂停；请手动拖滑块后告诉 Lead，由 Lead 恢复。`);
+    if (isPaused()) throw stopped(`${store}自动请求已暂停；请手动拖滑块后告诉 Lead，由 Lead 恢复。`);
   }
   function pause(record: Record<string, unknown>) {
-    fs.writeFileSync(pauseFile, JSON.stringify(record) + '\n', { mode: 0o600 });
+    fs.writeFileSync(pauseFile, JSON.stringify({ ...record, scope, entry: context.entry, access: context.access }) + '\n', { mode: 0o600 });
+  }
+  function verificationWithoutUi(cause: unknown): Error {
+    const code = 'VERIFICATION_WITHOUT_VISIBLE_CHALLENGE';
+    fs.appendFileSync(path.join(directory, 'verification-errors.jsonl'), JSON.stringify({
+      time: new Date().toISOString(), device: os.hostname(), store, profile: context.profile,
+      entry: context.entry, code, retries: 0, shop_paused: false,
+    }) + '\n', { mode: 0o600 });
+    return Object.assign(new Error(`${store}接口要求验证，但页面没有可见验证界面；本次请求失败，未重试，未暂停店铺。请检查本次接口错误后再处理该条。`),
+      { code, cause });
   }
   async function probe(): Promise<Probe | null> {
     if (!raw.getActivePage?.()) return null;
@@ -101,6 +141,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     if (pending) return pending;
     pending = (async () => {
       const meta = hint ?? await probe().catch(() => null);
+      if (!meta?.visible) return false;
       const target = raw.getActivePage?.();
       const challenge = digest(`${target}|${meta?.key || meta?.url || 'unavailable'}`);
       const claim = path.join(directory, `challenge-${challenge}.json`);
@@ -112,7 +153,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         throw stopped(`${store}这个挑战已尝试过一次；请手动拖滑块后告诉 Lead，由 Lead 恢复。`);
       }
       const record: Attempt = { id: randomUUID(), time: new Date().toISOString(), device: os.hostname(),
-        store, profile: context.profile, profile_alias: alias, entry: context.entry,
+        store, profile: context.profile, profile_alias: alias, entry: context.entry, scope,
         page_title: meta?.title ?? '', page_url: meta?.url?.split(/[?#]/)[0] ?? '',
         slidex_version: null, slidex_head: null, return_code: null, passed: false,
         business_read_succeeded: null, challenge };
@@ -160,7 +201,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     get(target, key) {
       const member = Reflect.get(target, key);
       if (typeof member !== 'function') return member;
-      if (['closeWindow', 'closeTab'].includes(String(key)) && fs.existsSync(pauseFile)) return async () => {};
+      if (['closeWindow', 'closeTab'].includes(String(key)) && isPaused()) return async () => {};
       if (unguardedMethods.has(String(key))) return member.bind(target);
       return async (...args: unknown[]) => {
         assertRunning();
@@ -168,19 +209,20 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         try { result = await member.apply(target, args); }
         catch (error) {
           if (!verification.test(textOf(error))) throw error;
-          await recover();
+          if (!await recover()) throw verificationWithoutUi(error);
           // Never replay a write or an unknown submission outcome.
           if (context.access !== 'read' || key === 'evaluateOnce') throw error;
           return await member.apply(target, args);
         }
         const challenged = verification.test(textOf(result));
         if (challenged) {
-          await recover();
+          if (!await recover()) throw verificationWithoutUi(result);
           if (context.access !== 'read' || key === 'evaluateOnce') {
             throw stopped('滑块已通过；原操作需要读回核对，未自动重放提交。');
           }
           result = await member.apply(target, args);
           if (verification.test(textOf(result))) {
+            if (!(await probe())?.visible) throw verificationWithoutUi(result);
             const record = attempts.at(-1)!;
             record.business_read_succeeded = false;
             pause(record);
@@ -212,15 +254,18 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         try { result = await invoke(); }
         catch (error) {
           if ((error as { slidexStopped?: boolean }).slidexStopped || !verification.test(textOf(error))) throw error;
+          const current = await probe();
+          if (!current?.visible) throw verificationWithoutUi(error);
           if (attempts.length) {
             pause(attempts.at(-1)!);
             throw stopped(`${store}滑块后业务仍要求验证，已暂停该店自动请求。`);
           }
-          await recover();
+          await recover(current);
           if (context.access !== 'read') throw error;
           result = await invoke();
         }
         if (verification.test(textOf(result))) {
+          if (!(await probe())?.visible) throw verificationWithoutUi(result);
           if (!attempts.length) await recover();
           pause(attempts.at(-1)!);
           throw stopped('业务读取仍要求验证，已暂停该店自动请求，请手动拖滑块后告诉 Lead，由 Lead 恢复。');

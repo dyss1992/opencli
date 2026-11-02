@@ -60,7 +60,7 @@ export async function preparePlatformAccess(
     Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b)))]);
   const cached = cache.get(store, key, policy);
   // Check local pause and shared paused state even for cache hits, without spending a grant.
-  await helper('check', { store_key: store, platform: 'taobao' });
+  await helper('check', { store_key: store, platform: 'taobao', purpose });
   if (cached) return { cached, markVerification: () => {}, finish: async (_value?: unknown, _error?: unknown) => {} };
   let verificationSeen = false;
   const grant = inherited ?? await helper('acquire', { store_key: store, platform: 'taobao',
