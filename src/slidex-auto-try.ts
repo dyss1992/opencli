@@ -50,7 +50,7 @@ export function slidexPauseScope(entry: string, access?: string): SlidexPauseSco
   return access === 'write' ? 'publish' : 'read';
 }
 
-type Context = { profile: string; session: string; entry: string; access: 'read' | 'write'; runId?: string; onChallenge?: () => void };
+type Context = { profile: string; session: string; entry: string; access: 'read' | 'write'; channel?: SlidexPauseScope; runId?: string; onChallenge?: () => void };
 type Probe = { url: string; title?: string; visible: boolean; key: string };
 type Attempt = Record<string, unknown> & { passed: boolean; business_read_succeeded: boolean | null };
 type Dependencies = {
@@ -94,8 +94,9 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     ['deep-toys', 'chabao-xingxing', 'gumo-studio', 'vnxr339n'].includes(name))?.[0] ?? context.profile;
   const store = ({ 'deep-toys': 'Deep Toys', 'chabao-xingxing': '瑞克莫蒂玩玩具',
     'gumo-studio': 'Gumo Studio', vnxr339n: 'Gumo Studio' } as Record<string, string>)[alias] ?? alias;
-  const pausedRead = !!recoveryChannel && context.access === 'read' && ['qn/order-page', 'qn/product-page'].includes(context.entry);
-  const scope = slidexPauseScope(context.entry, context.access);
+  const pauseProbe = process.env.OPENCLI_PAUSE_PROBE === '1' && context.entry === 'qn/product-page' && context.access === 'read';
+  const pausedRead = pauseProbe || !!recoveryChannel && context.access === 'read' && ['qn/order-page', 'qn/product-page'].includes(context.entry);
+  const scope = context.channel ?? slidexPauseScope(context.entry, context.access);
   const pauseFile = path.join(directory, `${digest(store)}.${scope}.paused.json`);
   const legacyPauseFile = path.join(directory, `${digest(store)}.paused.json`);
   function isPaused() {
@@ -249,6 +250,11 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       let success = false;
       try {
         assertRunning();
+        if (pauseProbe) {
+          const kept = JSON.parse(fs.readFileSync(path.join(directory, `${digest(store)}.publish.retained.json`), 'utf8'));
+          if (!kept.page) throw stopped('暂停页面已不存在，保留暂停。');
+          raw.setActivePage(kept.page);
+        }
         if (fs.existsSync(retainedFile) && !pausedRead) {
           const kept = JSON.parse(fs.readFileSync(retainedFile, 'utf8')) as { page: string; profile?: string };
           await sendCommandFull('tabs', { contextId: kept.profile ?? context.profile, session: context.session,

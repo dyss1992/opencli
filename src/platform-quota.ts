@@ -52,6 +52,7 @@ export async function preparePlatformAccess(
   const purpose = inherited?.purpose ?? process.env.PLATFORM_QUOTA_PURPOSE ??
     (command.name.startsWith('order') ? 'order' : command.name === 'product-stock' ? 'stock_reduce' :
       command.access === 'write' ? 'publish' : 'align');
+  const channel = purpose === 'publish' ? 'publish' : purpose === 'order' ? 'order' : 'read';
   // Writes and all default reads bypass the cache. Only explicitly observational callers opt in.
   const policy: ReadPolicy = { access: command.access, purpose,
     enabled: !inherited && process.env.OPENCLI_READ_CACHE === '1' };
@@ -66,16 +67,17 @@ export async function preparePlatformAccess(
   let resuming = false;
   try { await helper('check', { store_key: store, platform: 'taobao', purpose }); }
   catch (error) {
+    if (process.env.OPENCLI_PAUSE_PROBE === '1') throw error;
     if ((error as {code?: string}).code !== 'MANUAL_VERIFICATION' || command.access !== 'read' ||
         command.site !== 'qn' || !['order-page', 'product-page'].includes(command.name)) throw error;
     resuming = true;
     recoveryChannel = ['publish', 'order'].includes(purpose) ? purpose : 'read';
   }
-  if (cached && !resuming) return { cached, markVerification: () => {}, finish: async (_value?: unknown, _error?: unknown) => {} };
+  if (cached && !resuming) return { channel, cached, markVerification: () => {}, finish: async (_value?: unknown, _error?: unknown) => {} };
   let verificationSeen = false;
   const grant = resuming ? {} : inherited ?? await helper('acquire', { store_key: store, platform: 'taobao',
     priority: ['order', 'stock_reduce'].includes(purpose) ? 'high' : 'low', purpose });
-  return { cached: undefined, markVerification: () => { verificationSeen = true; }, finish: async (value?: unknown, error?: unknown) => {
+  return { channel, cached: undefined, markVerification: () => { verificationSeen = true; }, finish: async (value?: unknown, error?: unknown) => {
     const reported = error ?? (value && typeof value === 'object' && 'error' in value ? value : '');
     const text = reported instanceof Error ? `${reported.name} ${reported.message}` : JSON.stringify(reported) ?? '';
     const status = verification.test(text) ? 'verification' : error ? 'failed' : 'ok';
@@ -90,7 +92,7 @@ export async function preparePlatformAccess(
       else throw new Error(`该店自动请求已暂停；本轮读取未成功：${text || '返回结果无效或验证尚未完成'}`);
       return;
     }
-    try { await helper('result', { id: grant.id ?? grant.request_id, status, verification_seen: verificationSeen, ...(error ? { error: text } : {}) }); }
+    try { await helper('result', { id: grant.id ?? grant.request_id, status: process.env.OPENCLI_PAUSE_PROBE === '1' && status === 'verification' ? 'failed' : status, verification_seen: verificationSeen, ...(error ? { error: text } : {}) }); }
     catch (failure) { process.stderr.write(`额度结果记录失败：${String(failure)}\n`); }
     if (status === 'ok' && !error && !failedResult) {
       try { cache.put(store, key, policy, value); }

@@ -38,12 +38,12 @@ describe('entry-scoped verification pauses', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'slidex-persist-'));
     const raw = { getActivePage: () => 'target', evaluate: async () => ({ visible: true, key: 'new', url: 'https://example.test' }), wait: async () => {} } as unknown as IPage;
     try {
-      const guard = createSlidexGuard(raw, { profile: 'deep-toys', session: 'test', entry: 'taobao/publish', access: 'write' }, {
+      const guard = createSlidexGuard(raw, { profile: 'deep-toys', session: 'test', entry: 'qn/product-page', access: 'read', channel: 'publish' }, {
         directory, solve: async () => ({ passed: false }), notify: async () => true, retain: async () => ({}),
       });
       await expect(guard.run(() => guard.page.wait({ time: 1 }))).rejects.toThrow('已暂停');
       const marker = fs.readdirSync(directory).find(name => name.endsWith('.publish.paused.json'))!;
-      expect(JSON.parse(fs.readFileSync(path.join(directory, marker), 'utf8'))).toMatchObject({ scope: 'publish', entry: 'taobao/publish' });
+      expect(JSON.parse(fs.readFileSync(path.join(directory, marker), 'utf8'))).toMatchObject({ scope: 'publish', entry: 'qn/product-page' });
       expect(() => createSlidexGuard(raw, { profile: 'deep-toys', session: 'test', entry: 'qn/order-seller-memo', access: 'write' }, { directory }).assertRunning()).not.toThrow();
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });

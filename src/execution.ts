@@ -311,7 +311,7 @@ export async function executeCommand(
       try {
       result = await browserSession(BrowserFactory, async (rawPage) => {
         const guard = ['taobao', 'qn'].includes(cmd.site) ? createSlidexGuard(rawPage, {
-          profile: contextId ?? (rawPage as { contextId?: string }).contextId ?? '', session, entry: fullName(cmd), access: cmd.access, runId: leaseRun?.runId, onChallenge: quota?.markVerification,
+          profile: contextId ?? (rawPage as { contextId?: string }).contextId ?? '', session, entry: fullName(cmd), access: cmd.access, channel: quota?.channel, runId: leaseRun?.runId, onChallenge: quota?.markVerification,
         }) : null;
         const page = guard?.page ?? rawPage;
         const invokeAdapter = async () => {
