@@ -251,7 +251,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       try {
         assertRunning();
         if (pauseProbe) {
-          const kept = JSON.parse(fs.readFileSync(path.join(directory, `${digest(store)}.publish.retained.json`), 'utf8'));
+          const kept = JSON.parse(fs.readFileSync(path.join(directory, `${digest(store)}.${process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? 'publish'}.retained.json`), 'utf8'));
           if (!kept.page) throw stopped('暂停页面已不存在，保留暂停。');
           raw.setActivePage(kept.page);
         }
