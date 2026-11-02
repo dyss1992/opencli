@@ -21,7 +21,7 @@ async function helper(action: string, payload: unknown): Promise<Record<string, 
     child.on('close', code => {
       try {
         const row = JSON.parse(output.trim());
-        if (code !== 0) reject(new Error(row.error ?? error ?? `quota helper exited ${code}`));
+        if (code !== 0) reject(Object.assign(new Error(row.error ?? error ?? `quota helper exited ${code}`), { code: row.code }));
         else resolve(row);
       } catch { reject(new Error(error || output || `quota helper exited ${code}`)); }
     });
@@ -30,9 +30,12 @@ async function helper(action: string, payload: unknown): Promise<Record<string, 
   });
 }
 
+export let recoveryChannel: string | undefined;
+
 export async function preparePlatformAccess(
   command: { site: string; name: string; access: string }, args: Record<string, unknown>, profile?: string,
 ) {
+  recoveryChannel = undefined;
   if (!['taobao', 'qn'].includes(command.site)) return null;
   const context = resolveProfileSelection(profile)?.contextId;
   const alias = Object.entries(loadProfileConfig().aliases).find(([name, id]) =>
@@ -60,18 +63,35 @@ export async function preparePlatformAccess(
     Object.fromEntries(Object.entries(args).sort(([a], [b]) => a.localeCompare(b)))]);
   const cached = cache.get(store, key, policy);
   // Check local pause and shared paused state even for cache hits, without spending a grant.
-  await helper('check', { store_key: store, platform: 'taobao', purpose });
-  if (cached) return { cached, markVerification: () => {}, finish: async (_value?: unknown, _error?: unknown) => {} };
+  let resuming = false;
+  try { await helper('check', { store_key: store, platform: 'taobao', purpose }); }
+  catch (error) {
+    if ((error as {code?: string}).code !== 'MANUAL_VERIFICATION' || command.access !== 'read' ||
+        command.site !== 'qn' || !['order-page', 'product-page'].includes(command.name)) throw error;
+    resuming = true;
+    recoveryChannel = ['publish', 'order'].includes(purpose) ? purpose : 'read';
+  }
+  if (cached && !resuming) return { cached, markVerification: () => {}, finish: async (_value?: unknown, _error?: unknown) => {} };
   let verificationSeen = false;
-  const grant = inherited ?? await helper('acquire', { store_key: store, platform: 'taobao',
+  const grant = resuming ? {} : inherited ?? await helper('acquire', { store_key: store, platform: 'taobao',
     priority: ['order', 'stock_reduce'].includes(purpose) ? 'high' : 'low', purpose });
   return { cached: undefined, markVerification: () => { verificationSeen = true; }, finish: async (value?: unknown, error?: unknown) => {
     const reported = error ?? (value && typeof value === 'object' && 'error' in value ? value : '');
     const text = reported instanceof Error ? `${reported.name} ${reported.message}` : JSON.stringify(reported) ?? '';
     const status = verification.test(text) ? 'verification' : error ? 'failed' : 'ok';
+    const failedResult = /"(?:status|状态)"\s*:\s*"(?:error|failed|manual_verification)"|"(?:error|错误)"\s*:\s*"[^"]+"/i.test(JSON.stringify(value) ?? '');
+    const channel = recoveryChannel;
+    recoveryChannel = undefined;
+    if (resuming) {
+      const field = command.name === 'order-page' ? '订单编号' : '商品ID';
+      const normal = Array.isArray(value) && value.every(row => row && /^\d+$/.test(String(row[field])));
+      if (normal && status === 'ok' && !verificationSeen && !failedResult) await helper('resume', { store_key: store, platform: 'taobao', channel })
+        .catch(error => { throw new Error(`该店自动请求已暂停：${String(error)}`); });
+      else throw new Error(`该店自动请求已暂停；本轮读取未成功：${text || '返回结果无效或验证尚未完成'}`);
+      return;
+    }
     try { await helper('result', { id: grant.id ?? grant.request_id, status, verification_seen: verificationSeen, ...(error ? { error: text } : {}) }); }
     catch (failure) { process.stderr.write(`额度结果记录失败：${String(failure)}\n`); }
-    const failedResult = /"(?:status|状态)"\s*:\s*"(?:error|failed|manual_verification)"|"(?:error|错误)"\s*:\s*"[^"]+"/i.test(JSON.stringify(value) ?? '');
     if (status === 'ok' && !error && !failedResult) {
       try { cache.put(store, key, policy, value); }
       catch (failure) { process.stderr.write(`读取缓存保存失败：${String(failure)}\n`); }

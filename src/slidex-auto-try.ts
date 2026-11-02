@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { recoveryChannel } from './platform-quota.js';
 import type { IPage } from './types.js';
 import { loadProfileConfig } from './browser/profile.js';
 import { sendCommandFull } from './browser/daemon-client.js';
@@ -93,6 +94,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     ['deep-toys', 'chabao-xingxing', 'gumo-studio', 'vnxr339n'].includes(name))?.[0] ?? context.profile;
   const store = ({ 'deep-toys': 'Deep Toys', 'chabao-xingxing': '瑞克莫蒂玩玩具',
     'gumo-studio': 'Gumo Studio', vnxr339n: 'Gumo Studio' } as Record<string, string>)[alias] ?? alias;
+  const pausedRead = !!recoveryChannel && context.access === 'read' && ['qn/order-page', 'qn/product-page'].includes(context.entry);
   const scope = slidexPauseScope(context.entry, context.access);
   const pauseFile = path.join(directory, `${digest(store)}.${scope}.paused.json`);
   const legacyPauseFile = path.join(directory, `${digest(store)}.paused.json`);
@@ -118,7 +120,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
   });
 
   function assertRunning() {
-    if (isPaused()) throw stopped(`${store}自动请求已暂停；请手动拖滑块后告诉 Lead，由 Lead 恢复。`);
+    if (isPaused() && !pausedRead) throw stopped(`${store}自动请求已暂停；请手动拖滑块，下一轮正常读取后自动恢复。`);
   }
   function pause(record: Record<string, unknown>) {
     fs.writeFileSync(pauseFile, JSON.stringify({ ...record, scope, entry: context.entry, access: context.access }) + '\n', { mode: 0o600 });
@@ -137,6 +139,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     return await raw.evaluate<Probe>(probeScript);
   }
   async function recover(hint?: Probe | null): Promise<boolean> {
+    if (pausedRead) throw stopped(`${store}仍需手动验证，自动请求已暂停，等待下轮读取。`);
     assertRunning();
     if (pending) return pending;
     pending = (async () => {
@@ -150,7 +153,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         pause({ reason: 'challenge_already_attempted', challenge });
-        throw stopped(`${store}这个挑战已尝试过一次；请手动拖滑块后告诉 Lead，由 Lead 恢复。`);
+        throw stopped(`${store}这个挑战已尝试过一次；请手动拖滑块，下一轮正常读取后自动恢复。`);
       }
       const record: Attempt = { id: randomUUID(), time: new Date().toISOString(), device: os.hostname(),
         store, profile: context.profile, profile_alias: alias, entry: context.entry, scope,
@@ -190,7 +193,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         }
       try { record.notification_sent = await notify(record); }
       catch (error) { record.notification_sent = false; record.notification_error = textOf(error); }
-      if (!record.passed) throw stopped(`${store} Slidex未通过，已暂停该店自动请求，请手动拖滑块后告诉 Lead，由 Lead 恢复。`);
+      if (!record.passed) throw stopped(`${store} Slidex未通过，已暂停该店自动请求，请手动拖滑块，下一轮正常读取后自动恢复。`);
       return true;
     })();
     try { return await pending; } finally { pending = null; }
@@ -229,6 +232,8 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
             throw stopped(`${store}滑块后业务仍要求验证，已暂停该店自动请求。`);
           }
         }
+        if (pausedRead && result && typeof result === 'object' && 'ret' in result &&
+            !/^SUCCESS/.test(String((result as {ret: unknown}).ret))) throw stopped(`${store}自动请求已暂停：${textOf(result)}`);
         // Clicks and navigation can reveal a challenge without an error response.
         if (['goto', 'wait', 'click', 'clickAt'].includes(String(key))) {
           const after = await probe();
@@ -244,7 +249,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       let success = false;
       try {
         assertRunning();
-        if (fs.existsSync(retainedFile)) {
+        if (fs.existsSync(retainedFile) && !pausedRead) {
           const kept = JSON.parse(fs.readFileSync(retainedFile, 'utf8')) as { page: string; profile?: string };
           await sendCommandFull('tabs', { contextId: kept.profile ?? context.profile, session: context.session,
             surface: 'adapter', op: 'close-retained', page: kept.page });
@@ -268,7 +273,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
           if (!(await probe())?.visible) throw verificationWithoutUi(result);
           if (!attempts.length) await recover();
           pause(attempts.at(-1)!);
-          throw stopped('业务读取仍要求验证，已暂停该店自动请求，请手动拖滑块后告诉 Lead，由 Lead 恢复。');
+          throw stopped('业务读取仍要求验证，已暂停该店自动请求，请手动拖滑块，下一轮正常读取后自动恢复。');
         }
         success = !/"(?:status|状态)"\s*:\s*"(?:error|failed|manual_verification|readback_failed[^"\s]*)"/i.test(textOf(result));
         return result;
