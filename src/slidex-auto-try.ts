@@ -94,7 +94,11 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     ['deep-toys', 'chabao-xingxing', 'gumo-studio', 'vnxr339n'].includes(name))?.[0] ?? context.profile;
   const store = ({ 'deep-toys': 'Deep Toys', 'chabao-xingxing': '瑞克莫蒂玩玩具',
     'gumo-studio': 'Gumo Studio', vnxr339n: 'Gumo Studio' } as Record<string, string>)[alias] ?? alias;
-  const pauseProbe = process.env.OPENCLI_PAUSE_PROBE === '1' && context.entry === 'qn/product-page' && context.access === 'read';
+  const persistentRead = context.access === 'read' && ['qn/order-page','qn/product-page'].includes(context.entry);
+  const pageFile = path.join(directory, `${digest(store)}.${context.entry.replace('/', '-')}.page.json`);
+  const pauseProbe = process.env.OPENCLI_PAUSE_PROBE === '1' && persistentRead;
+  const entryProbe = pauseProbe && ['read','order'].includes(process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? '');
+  let boundRead = false;
   const pausedRead = pauseProbe || !!recoveryChannel && context.access === 'read' && ['qn/order-page', 'qn/product-page'].includes(context.entry);
   const scope = context.channel ?? slidexPauseScope(context.entry, context.access);
   const pauseFile = path.join(directory, `${digest(store)}.${scope}.paused.json`);
@@ -210,10 +214,22 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     get(target, key) {
       const member = Reflect.get(target, key);
       if (typeof member !== 'function') return member;
-      if (['closeWindow', 'closeTab'].includes(String(key)) && isPaused()) return async () => {};
+      if (['closeWindow', 'closeTab'].includes(String(key)) && (persistentRead || isPaused())) return async () => {};
       if (unguardedMethods.has(String(key))) return member.bind(target);
       return async (...args: unknown[]) => {
         assertRunning();
+        if (persistentRead && key === 'goto' && raw.getActivePage?.()) {
+          const current = await raw.evaluate<string>('location.href');
+          const target = new URL(String(args[0]));
+          if (new URL(current).origin === target.origin && new URL(current).pathname === target.pathname) {
+            const currentProbe = await probe();
+          if (currentProbe?.visible) {
+            if (pausedRead) throw stopped('原读取页仍有验证，保留暂停。');
+            await recover(currentProbe);
+          }
+            return;
+          }
+        }
         let result: unknown;
         try { result = await member.apply(target, args); }
         catch (error) {
@@ -255,9 +271,42 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       let success = false;
       try {
         assertRunning();
-        if (pauseProbe) {
-          const readProbe = process.env.OPENCLI_PAUSE_PROBE_SCOPE === 'read';
-          const kept = JSON.parse(fs.readFileSync(path.join(directory, `${digest(store)}.${process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? 'publish'}.retained.json`), 'utf8'));
+        if (persistentRead && (!pauseProbe || entryProbe)) {
+          const options = {contextId: context.profile, session: context.session, surface:'adapter' as const, windowMode:'background' as const, tabPlacement:'existing-window' as const};
+          const order = context.entry === 'qn/order-page';
+          const matches = (url: string) => order
+            ? /^https:\/\/qn\.taobao\.com\/home\.htm\/qn-order\//.test(url)
+            : /^https:\/\/qn\.taobao\.com\/home\.htm\/SellManage\//.test(url);
+          const otherFile = path.join(directory, `${digest(store)}.${order ? 'qn-product-page' : 'qn-order-page'}.page.json`);
+          const otherPage = fs.existsSync(otherFile) ? JSON.parse(fs.readFileSync(otherFile,'utf8')).page : null;
+          const ownRetained = path.join(directory, `${digest(store)}.${order ? 'order' : 'read'}.retained.json`);
+          let bound: {page?:string;data?:unknown} | undefined;
+          for (const file of [pageFile, ownRetained]) {
+            if (!fs.existsSync(file)) continue;
+            const kept = JSON.parse(fs.readFileSync(file,'utf8'));
+            if (kept.page === otherPage) continue;
+            try {
+              const candidate = await sendCommandFull('tabs',{...options,op:'retain',page:kept.page});
+              if (candidate.page && candidate.page !== otherPage && matches(String((candidate.data as {url?:string})?.url ?? ''))) {bound=candidate;break;}
+            } catch(error) {if (!/stale page identity|Page not found|bound_tab_gone|tab_gone/.test(textOf(error))) throw error;}
+          }
+          if (!bound) {
+            const current = await sendCommandFull('chrome-call',{...options,chromeMethod:'tabs.query',chromeArgs:[{}]});
+            const candidates = [];
+            for (const tab of (current.data as Array<{id:number;url?:string}>).filter(t=>matches(t.url ?? ''))) {
+              const candidate = await sendCommandFull('tabs',{...options,op:'retain',tabId:tab.id});
+              if (candidate.page !== otherPage) candidates.push(candidate);
+            }
+            if (candidates.length>1) throw stopped('本入口现有标签不唯一，未新开或导航。');
+            bound = candidates[0] ?? await sendCommandFull('tabs',{...options,op:'new',url: order ? 'https://qn.taobao.com/home.htm/qn-order/unshipped' : 'https://qn.taobao.com/home.htm/SellManage/all'});
+          }
+          if (!bound.page || !raw.setActivePage) throw stopped('本入口页面绑定失败。');
+          raw.setActivePage(bound.page);boundRead=true;
+          if ((await probe())?.visible) throw stopped('原读取页仍有验证，保留暂停。');
+        }
+        if (pauseProbe && !entryProbe) {
+          const readProbe = ['read','order'].includes(process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? '');
+          const kept = JSON.parse(fs.readFileSync(process.env.OPENCLI_PAUSE_PROBE_SCOPE === 'order' && fs.existsSync(pageFile) ? pageFile : path.join(directory, `${digest(store)}.${process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? 'publish'}.retained.json`), 'utf8'));
           const options = { contextId: kept.profile ?? context.profile, session: context.session, surface: 'adapter' as const };
           const current = await sendCommandFull('chrome-call', { ...options, chromeMethod: 'tabs.query', chromeArgs: [{}] });
           const tabs = (current.data as Array<{id: number; url?: string; discarded?: boolean; lastAccessed?: number}>).filter(t =>
@@ -288,7 +337,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
             if ((await probe())?.visible) throw stopped('商品页重载后仍有验证，保留暂停。');
           }
         }
-        if (fs.existsSync(retainedFile) && !pausedRead) {
+        if (fs.existsSync(retainedFile) && !pausedRead && !persistentRead) {
           const kept = JSON.parse(fs.readFileSync(retainedFile, 'utf8')) as { page: string; profile?: string };
           await sendCommandFull('tabs', { contextId: kept.profile ?? context.profile, session: context.session,
             surface: 'adapter', op: 'close-retained', page: kept.page });
@@ -317,6 +366,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         success = !/"(?:status|状态)"\s*:\s*"(?:error|failed|manual_verification|readback_failed[^"\s]*)"/i.test(textOf(result));
         return result;
       } finally {
+        if (boundRead && raw.getActivePage?.()) fs.writeFileSync(pageFile, JSON.stringify({page:raw.getActivePage(),profile:context.profile}));
         for (const record of attempts) {
           record.business_read_succeeded ??= context.access === 'read' ? record.passed && success : (success ? null : false);
           fs.appendFileSync(path.join(directory, 'attempts.jsonl'), JSON.stringify(record) + '\n', { mode: 0o600 });
