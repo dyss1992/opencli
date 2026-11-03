@@ -130,10 +130,10 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     const code = 'VERIFICATION_WITHOUT_VISIBLE_CHALLENGE';
     fs.appendFileSync(path.join(directory, 'verification-errors.jsonl'), JSON.stringify({
       time: new Date().toISOString(), device: os.hostname(), store, profile: context.profile,
-      entry: context.entry, code, retries: 0, shop_paused: false,
+      entry: context.entry, code, retries: 0, shop_paused: false, error: textOf(cause),
     }) + '\n', { mode: 0o600 });
     return Object.assign(new Error(`${store}接口要求验证，但页面没有可见验证界面；本次请求失败，未重试，未暂停店铺。请检查本次接口错误后再处理该条。`),
-      { code, cause });
+      { code });
   }
   async function probe(): Promise<Probe | null> {
     if (!raw.getActivePage?.()) return null;
@@ -160,7 +160,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         store, profile: context.profile, profile_alias: alias, entry: context.entry, scope,
         page_title: meta?.title ?? '', page_url: meta?.url?.split(/[?#]/)[0] ?? '',
         slidex_version: null, slidex_head: null, return_code: null, passed: false,
-        business_read_succeeded: null, challenge };
+        business_read_succeeded: null, challenge, probe: meta };
       attempts.push(record);
       context.onChallenge?.();
       const request = { profile: context.profile, session: context.session,
@@ -169,6 +169,11 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         Object.assign(record, await solve(request));
 
       } catch (error) { record.error = textOf(error); }
+      const after = await probe().catch(() => null);
+      record.after_probe = after;
+      if (after?.visible) record.passed = false;
+      if (record.return_code === 0 && after?.visible === false && after.url === meta.url) record.passed = true;
+      if (!record.passed && after?.visible === false) throw verificationWithoutUi(record);
       if (!record.passed) {
         pause(record);
         if (target) {
@@ -254,16 +259,21 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
           const kept = JSON.parse(fs.readFileSync(path.join(directory, `${digest(store)}.${process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? 'publish'}.retained.json`), 'utf8'));
           const options = { contextId: kept.profile ?? context.profile, session: context.session, surface: 'adapter' as const };
           const current = await sendCommandFull('chrome-call', { ...options, chromeMethod: 'tabs.query', chromeArgs: [{}] });
-          const tabs = (current.data as Array<{id: number; url?: string; discarded?: boolean}>).filter(t =>
-            /^https:\/\/qn\.taobao\.com\/home\.htm\/SellManage\//.test(t.url ?? ''));
-          const tab = tabs.length === 1 ? tabs[0] : null;
-          if (!tab) throw stopped('商品页不存在或不唯一，保留暂停；未新建标签。');
-          const target = { ...options, op: 'retain', tabId: tab.id };
-          const bound = await sendCommandFull('tabs', target);
+          const tabs = (current.data as Array<{id: number; url?: string; discarded?: boolean; lastAccessed?: number}>).filter(t =>
+            /^https:\/\/qn\.taobao\.com\/home\.htm\/SellManage\//.test(t.url ?? '')).sort((a,b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+          let tab: typeof tabs[number] | undefined, bound;
+          try { if (kept.page) bound = await sendCommandFull('tabs', { ...options, op: 'retain', page: kept.page }); }
+          catch (error) { if (!/stale page identity|Page not found:|bound_tab_gone|tab_gone/.test(textOf(error))) throw error; }
+          if (!/^https:\/\/qn\.taobao\.com\/home\.htm\/SellManage\//.test(String((bound?.data as {url?: string})?.url ?? ''))) bound = undefined;
+          if (!bound?.page) {
+            tab = tabs[0];
+            if (!tab) throw stopped('没有现有商品页，保留暂停；未新建标签。');
+            bound = await sendCommandFull('tabs', { ...options, op: 'retain', tabId: tab.id });
+          }
           if (!bound.page || !raw.setActivePage) throw stopped('商品页绑定失败，保留暂停。');
           raw.setActivePage(bound.page);
-          if (!tab.discarded && (await probe())?.visible) throw stopped('商品页仍有验证，保留暂停。');
-          if (tab.discarded || !await raw.evaluate('!!window.__UNIVERSAL_MTOP_APPEND_LIB_MTOP_IN_BROWSER__')) {
+          if (!tab?.discarded && (await probe())?.visible) throw stopped('商品页仍有验证，保留暂停。');
+          if (tab?.discarded || !await raw.evaluate('!!window.__UNIVERSAL_MTOP_APPEND_LIB_MTOP_IN_BROWSER__')) {
             await raw.cdp?.('Page.getFrameTree'); // Attach the existing beforeunload auto-accept handler.
             await raw.evaluate('setTimeout(() => location.reload(), 0); true');
             let ready = false;
