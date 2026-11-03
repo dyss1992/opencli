@@ -252,8 +252,28 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         assertRunning();
         if (pauseProbe) {
           const kept = JSON.parse(fs.readFileSync(path.join(directory, `${digest(store)}.${process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? 'publish'}.retained.json`), 'utf8'));
-          if (!kept.page) throw stopped('暂停页面已不存在，保留暂停。');
-          raw.setActivePage(kept.page);
+          const options = { contextId: kept.profile ?? context.profile, session: context.session, surface: 'adapter' as const };
+          const current = await sendCommandFull('chrome-call', { ...options, chromeMethod: 'tabs.query', chromeArgs: [{}] });
+          const tabs = (current.data as Array<{id: number; url?: string; discarded?: boolean}>).filter(t =>
+            /^https:\/\/qn\.taobao\.com\/home\.htm\/SellManage\//.test(t.url ?? ''));
+          const tab = tabs.length === 1 ? tabs[0] : null;
+          if (!tab) throw stopped('商品页不存在或不唯一，保留暂停；未新建标签。');
+          const target = { ...options, op: 'retain', tabId: tab.id };
+          const bound = await sendCommandFull('tabs', target);
+          if (!bound.page || !raw.setActivePage) throw stopped('商品页绑定失败，保留暂停。');
+          raw.setActivePage(bound.page);
+          if (!tab.discarded && (await probe())?.visible) throw stopped('商品页仍有验证，保留暂停。');
+          if (tab.discarded || !await raw.evaluate('!!window.__UNIVERSAL_MTOP_APPEND_LIB_MTOP_IN_BROWSER__')) {
+            await raw.cdp?.('Page.getFrameTree'); // Attach the existing beforeunload auto-accept handler.
+            await raw.evaluate('setTimeout(() => location.reload(), 0); true');
+            let ready = false;
+            for (let i=0; i<15 && !ready; i++) {
+              await raw.wait({time: 1});
+              try { ready = await raw.evaluate('!!window.__UNIVERSAL_MTOP_APPEND_LIB_MTOP_IN_BROWSER__'); } catch {}
+            }
+            if (!ready) throw stopped('商品页后台重载一次后 mtop 仍不可用，保留暂停。');
+            if ((await probe())?.visible) throw stopped('商品页重载后仍有验证，保留暂停。');
+          }
         }
         if (fs.existsSync(retainedFile) && !pausedRead) {
           const kept = JSON.parse(fs.readFileSync(retainedFile, 'utf8')) as { page: string; profile?: string };
