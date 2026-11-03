@@ -1616,6 +1616,11 @@ async function waitForQnOrderPage(page, orderPage, timeoutSeconds = 35) {
 export async function ensureQnOrderPage(page, rawPage = 'unshipped', timeoutSeconds = 35) {
   if (!page) throw new Error('Browser page required');
   const orderPage = resolveOrderPage(rawPage);
+  const current = page.getActivePage?.() ? await page.evaluate('location.href') : '';
+  if (/^https:\/\/qn\.taobao\.com\/home\.htm\/qn-order\//.test(current)) {
+    const key = Object.keys(ORDER_PAGES).find(key => new URL(ORDER_PAGES[key].url).pathname === new URL(current).pathname);
+    if (key) return await waitForQnOrderPage(page, resolveOrderPage(key), timeoutSeconds);
+  }
   await navigateQnPage(page, orderPage.url, { settleMs: 1800 });
   return await waitForQnOrderPage(page, orderPage, timeoutSeconds);
 }

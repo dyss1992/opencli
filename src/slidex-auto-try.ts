@@ -218,10 +218,13 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       if (unguardedMethods.has(String(key))) return member.bind(target);
       return async (...args: unknown[]) => {
         assertRunning();
+        if (persistentRead && key === 'evaluate' && /^\s*(?:window\.)?location\.reload\(\);?\s*$/.test(String(args[0]))) return;
+        if (persistentRead && key === 'pressKey' && /^(?:Meta|Ctrl)\+r$/i.test(String(args[0]))) return;
         if (persistentRead && key === 'goto' && raw.getActivePage?.()) {
           const current = await raw.evaluate<string>('location.href');
           const target = new URL(String(args[0]));
-          if (new URL(current).origin === target.origin && new URL(current).pathname === target.pathname) {
+          const prefix = context.entry === 'qn/order-page' ? '/home.htm/qn-order/' : '/home.htm/SellManage/';
+          if (new URL(current).origin === target.origin && new URL(current).pathname.startsWith(prefix) && target.pathname.startsWith(prefix)) {
             const currentProbe = await probe();
           if (currentProbe?.visible) {
             if (pausedRead) throw stopped('原读取页仍有验证，保留暂停。');
