@@ -256,6 +256,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       try {
         assertRunning();
         if (pauseProbe) {
+          const readProbe = process.env.OPENCLI_PAUSE_PROBE_SCOPE === 'read';
           const kept = JSON.parse(fs.readFileSync(path.join(directory, `${digest(store)}.${process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? 'publish'}.retained.json`), 'utf8'));
           const options = { contextId: kept.profile ?? context.profile, session: context.session, surface: 'adapter' as const };
           const current = await sendCommandFull('chrome-call', { ...options, chromeMethod: 'tabs.query', chromeArgs: [{}] });
@@ -264,7 +265,8 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
           let tab: typeof tabs[number] | undefined, bound;
           try { if (kept.page) bound = await sendCommandFull('tabs', { ...options, op: 'retain', page: kept.page }); }
           catch (error) { if (!/stale page identity|Page not found:|bound_tab_gone|tab_gone/.test(textOf(error))) throw error; }
-          if (!/^https:\/\/qn\.taobao\.com\/home\.htm\/SellManage\//.test(String((bound?.data as {url?: string})?.url ?? ''))) bound = undefined;
+          if (!readProbe && !/^https:\/\/qn\.taobao\.com\/home\.htm\/SellManage\//.test(String((bound?.data as {url?: string})?.url ?? ''))) bound = undefined;
+          if (!bound?.page && readProbe) throw stopped('原验证页已不可绑定，保留暂停；未换页探测。');
           if (!bound?.page) {
             tab = tabs[0];
             if (!tab) throw stopped('没有现有商品页，保留暂停；未新建标签。');
@@ -272,8 +274,9 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
           }
           if (!bound.page || !raw.setActivePage) throw stopped('商品页绑定失败，保留暂停。');
           raw.setActivePage(bound.page);
-          if (!tab?.discarded && (await probe())?.visible) throw stopped('商品页仍有验证，保留暂停。');
-          if (tab?.discarded || !await raw.evaluate('!!window.__UNIVERSAL_MTOP_APPEND_LIB_MTOP_IN_BROWSER__')) {
+          const verification = tab?.discarded ? null : await probe();
+          if (!tab?.discarded && (readProbe ? verification?.visible !== false : verification?.visible)) throw stopped('原验证页仍有验证或不可读，保留暂停。');
+          if (!readProbe && (tab?.discarded || !await raw.evaluate('!!window.__UNIVERSAL_MTOP_APPEND_LIB_MTOP_IN_BROWSER__'))) {
             await raw.cdp?.('Page.getFrameTree'); // Attach the existing beforeunload auto-accept handler.
             await raw.evaluate('setTimeout(() => location.reload(), 0); true');
             let ready = false;
