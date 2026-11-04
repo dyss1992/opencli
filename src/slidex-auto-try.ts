@@ -94,11 +94,13 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     ['deep-toys', 'chabao-xingxing', 'gumo-studio', 'vnxr339n'].includes(name))?.[0] ?? context.profile;
   const store = ({ 'deep-toys': 'Deep Toys', 'chabao-xingxing': '瑞克莫蒂玩玩具',
     'gumo-studio': 'Gumo Studio', vnxr339n: 'Gumo Studio' } as Record<string, string>)[alias] ?? alias;
-  const persistentRead = context.access === 'read' && ['qn/order-page','qn/product-page'].includes(context.entry);
+  const productRead = context.access === 'read' && context.entry === 'qn/product-page';
+  const persistentRead = productRead || context.profile === 'x33gj5x7' && context.access === 'read' && context.entry === 'qn/order-page';
   const pageFile = path.join(directory, `${digest(store)}.${context.entry.replace('/', '-')}.page.json`);
-  const pauseProbe = process.env.OPENCLI_PAUSE_PROBE === '1' && persistentRead;
-  const entryProbe = pauseProbe && ['read','order'].includes(process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? '');
-  let boundRead = false;
+  const pauseProbe = process.env.OPENCLI_PAUSE_PROBE === '1' && (persistentRead || context.entry === 'qn/product-page' && context.access === 'read');
+  const entryProbe = pauseProbe && persistentRead && ['read','order'].includes(process.env.OPENCLI_PAUSE_PROBE_SCOPE ?? '');
+  let boundRead = false, borrowedRead = false, createdProductPage = false;
+  const readOptions = {contextId:context.profile,session:context.session,surface:'adapter' as const,windowMode:'background' as const,tabPlacement:'existing-window' as const};
   const pausedRead = pauseProbe || !!recoveryChannel && context.access === 'read' && ['qn/order-page', 'qn/product-page'].includes(context.entry);
   const scope = context.channel ?? slidexPauseScope(context.entry, context.access);
   const pauseFile = path.join(directory, `${digest(store)}.${scope}.paused.json`);
@@ -144,6 +146,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
     return await raw.evaluate<Probe>(probeScript);
   }
   async function recover(hint?: Probe | null): Promise<boolean> {
+    if (process.env.OPENCLI_VERIFICATION_FAIL_FAST === '1') throw stopped('验收读取出现验证，立即停止，未自动验证或重试。');
     if (pausedRead) throw stopped(`${store}仍需手动验证，自动请求已暂停，等待下轮读取。`);
     assertRunning();
     if (pending) return pending;
@@ -212,6 +215,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
   const unguardedMethods = new Set(['getActivePage', 'setActivePage', 'closeWindow', 'closeTab', 'handleJavaScriptDialog']);
   const page = new Proxy(raw, {
     get(target, key) {
+      if (key === '__verifiedOrderPage') return persistentRead && !productRead;
       const member = Reflect.get(target, key);
       if (typeof member !== 'function') return member;
       if (['closeWindow', 'closeTab'].includes(String(key)) && (persistentRead || isPaused())) return async () => {};
@@ -275,7 +279,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       try {
         assertRunning();
         if (persistentRead && (!pauseProbe || entryProbe)) {
-          const options = {contextId: context.profile, session: context.session, surface:'adapter' as const, windowMode:'background' as const, tabPlacement:'existing-window' as const};
+          const options = readOptions;
           const order = context.entry === 'qn/order-page';
           const matches = (url: string) => order
             ? /^https:\/\/qn\.taobao\.com\/home\.htm\/qn-order\//.test(url)
@@ -284,24 +288,34 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
           const otherPage = fs.existsSync(otherFile) ? JSON.parse(fs.readFileSync(otherFile,'utf8')).page : null;
           const ownRetained = path.join(directory, `${digest(store)}.${order ? 'order' : 'read'}.retained.json`);
           let bound: {page?:string;data?:unknown} | undefined;
-          for (const file of [pageFile, ownRetained]) {
+          for (const file of [ownRetained, pageFile]) {
             if (!fs.existsSync(file)) continue;
             const kept = JSON.parse(fs.readFileSync(file,'utf8'));
             if (kept.page === otherPage) continue;
             try {
-              const candidate = await sendCommandFull('tabs',{...options,op:'retain',page:kept.page});
+              const candidate = await sendCommandFull('tabs',{...options,op:'retain',page:kept.page});borrowedRead=true;
               if (candidate.page && candidate.page !== otherPage && matches(String((candidate.data as {url?:string})?.url ?? ''))) {bound=candidate;break;}
+              await sendCommandFull('close-window', options);borrowedRead=false;
             } catch(error) {if (!/stale page identity|Page not found|bound_tab_gone|tab_gone/.test(textOf(error))) throw error;}
           }
           if (!bound) {
             const current = await sendCommandFull('chrome-call',{...options,chromeMethod:'tabs.query',chromeArgs:[{}]});
             const candidates = [];
             for (const tab of (current.data as Array<{id:number;url?:string}>).filter(t=>matches(t.url ?? ''))) {
-              const candidate = await sendCommandFull('tabs',{...options,op:'retain',tabId:tab.id});
-              if (candidate.page !== otherPage) candidates.push(candidate);
+              const candidate = await sendCommandFull('tabs',{...options,op:'retain',tabId:tab.id});borrowedRead=true;
+              if (candidate.page !== otherPage) {candidates.push(candidate);break;}
+              else {await sendCommandFull('close-window', options);borrowedRead=false;}
             }
-            if (candidates.length>1) throw stopped('本入口现有标签不唯一，未新开或导航。');
-            bound = candidates[0] ?? await sendCommandFull('tabs',{...options,op:'new',url: order ? 'https://qn.taobao.com/home.htm/qn-order/unshipped' : 'https://qn.taobao.com/home.htm/SellManage/all'});
+            bound = candidates[0];
+            if (bound?.page) {
+              bound = await sendCommandFull('tabs',{...options,op:'retain',page:bound.page});borrowedRead=true;
+              if (!matches(String((bound.data as {url?:string})?.url ?? ''))) throw stopped('入口标签已改变，未导航或新建。');
+            } else {
+              const created = await sendCommandFull('tabs',{...options,op:'new',url: order ? 'https://qn.taobao.com/home.htm/qn-order/unshipped' : 'https://qn.taobao.com/home.htm/SellManage/all'});
+              if (!created.page) throw stopped('入口新页未返回ID。');
+              if (productRead) {bound=created;createdProductPage=true;}
+              else {bound = await sendCommandFull('tabs',{...options,op:'retain',page:created.page});borrowedRead=true;}
+            }
           }
           if (!bound.page || !raw.setActivePage) throw stopped('本入口页面绑定失败。');
           raw.setActivePage(bound.page);boundRead=true;
@@ -369,7 +383,8 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         success = !/"(?:status|状态)"\s*:\s*"(?:error|failed|manual_verification|readback_failed[^"\s]*)"/i.test(textOf(result));
         return result;
       } finally {
-        if (boundRead && raw.getActivePage?.()) fs.writeFileSync(pageFile, JSON.stringify({page:raw.getActivePage(),profile:context.profile}));
+        if (boundRead && !createdProductPage && raw.getActivePage?.()) fs.writeFileSync(pageFile, JSON.stringify({page:raw.getActivePage(),profile:context.profile}));
+        if (borrowedRead || createdProductPage && !isPaused()) await sendCommandFull('close-window', readOptions).catch(() => {}); // Bound-session detach preserves the real tab.
         for (const record of attempts) {
           record.business_read_succeeded ??= context.access === 'read' ? record.passed && success : (success ? null : false);
           fs.appendFileSync(path.join(directory, 'attempts.jsonl'), JSON.stringify(record) + '\n', { mode: 0o600 });
