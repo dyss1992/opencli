@@ -10,6 +10,7 @@ function createChromeMock() {
       url: 'https://x.com/home',
     })),
     onRemoved: { addListener: vi.fn((fn: (tabId: number) => void) => { tabRemovedListeners.push(fn); }) },
+    onCreated: { addListener: vi.fn() },
     onUpdated: { addListener: vi.fn() },
   };
 
@@ -49,6 +50,38 @@ describe('cdp attach recovery', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it.each(['discarded', 'unloaded', 'awake'])('wakes %s tabs before CDP without changing focus', async mode => {
+    const { chrome, debuggerApi } = createChromeMock();
+    let discarded = mode === 'discarded', unloaded = mode === 'unloaded';
+    chrome.tabs.get.mockImplementation(async () => ({ id: 1, windowId: 1, url: 'https://example.com/',
+      autoDiscardable: true, discarded, status: unloaded ? 'unloaded' : 'complete' }));
+    const update = vi.fn(async () => ({}));
+    const reload = vi.fn(async () => { discarded = false; unloaded = false; });
+    Object.assign(chrome.tabs, { update, reload });
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./cdp');
+    await mod.ensureAttached(1);
+    expect(update).toHaveBeenCalledExactlyOnceWith(1, { autoDiscardable: false });
+    expect(reload).toHaveBeenCalledTimes(mode === 'awake' ? 0 : 1);
+    if (mode !== 'awake') expect(reload.mock.invocationCallOrder[0]).toBeLessThan(debuggerApi.attach.mock.invocationCallOrder[0]);
+    expect(debuggerApi.sendCommand).toHaveBeenCalledWith({ tabId: 1 }, 'Page.enable');
+  });
+
+  it('protects new tabs and tabs made discardable again without reloading', async () => {
+    const { chrome } = createChromeMock();
+    const update = vi.fn(async () => ({}));
+    Object.assign(chrome.tabs, { update });
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./cdp');
+    mod.registerListeners();
+    const created = chrome.tabs.onCreated.addListener.mock.calls[0][0] as (tab: chrome.tabs.Tab) => void;
+    const changed = chrome.tabs.onUpdated.addListener.mock.calls[0][0] as (id: number, info: object, tab: chrome.tabs.Tab) => Promise<void>;
+    created({ id: 2, autoDiscardable: true } as chrome.tabs.Tab);
+    await changed(3, {}, { id: 3, autoDiscardable: true } as chrome.tabs.Tab);
+    await changed(3, {}, { id: 3, autoDiscardable: false } as chrome.tabs.Tab);
+    expect(update.mock.calls).toEqual([[2, { autoDiscardable: false }], [3, { autoDiscardable: false }]]);
   });
 
   it('does not mutate the DOM before a successful attach', async () => {
@@ -156,6 +189,7 @@ function chromeMockForScreenshot(content: { width: number; height: number } = { 
   const tabs = {
     get: vi.fn(async () => ({ id: 1, windowId: 1, url: 'https://example.com' })),
     onRemoved: { addListener: vi.fn() },
+    onCreated: { addListener: vi.fn() },
     onUpdated: { addListener: vi.fn() },
   };
   return {
@@ -276,7 +310,8 @@ describe('cdp screenshot', () => {
       tabs: {
         get: vi.fn(async () => ({ id: 1, windowId: 1, url: 'https://example.com' })),
         onRemoved: { addListener: vi.fn() },
-        onUpdated: { addListener: vi.fn() },
+        onCreated: { addListener: vi.fn() },
+    onUpdated: { addListener: vi.fn() },
       },
       debugger: debuggerApi,
       scripting: {},
@@ -448,7 +483,8 @@ describe('cdp network capture survives forced re-attach', () => {
     const tabs = {
       get: vi.fn(async () => ({ id: 1, windowId: 1, url: 'https://x.com/home' })),
       onRemoved: { addListener: vi.fn() },
-      onUpdated: { addListener: vi.fn() },
+      onCreated: { addListener: vi.fn() },
+    onUpdated: { addListener: vi.fn() },
     };
     return {
       chrome: { tabs, debugger: debuggerApi, scripting: {}, runtime: { id: 'opencli-test' } },
@@ -506,7 +542,8 @@ describe('cdp network capture correctness', () => {
     const tabs = {
       get: vi.fn(async () => ({ id: 1, windowId: 1, url: 'https://x.com/home' })),
       onRemoved: { addListener: vi.fn() },
-      onUpdated: { addListener: vi.fn() },
+      onCreated: { addListener: vi.fn() },
+    onUpdated: { addListener: vi.fn() },
     };
     const fire = async (method: string, params: Record<string, unknown>) => {
       for (const fn of onEventListeners) await fn({ tabId: 1 }, method, params);
@@ -684,7 +721,8 @@ describe('cdp evaluateInFrame stale context fallback', () => {
     const tabs = {
       get: vi.fn(async () => ({ id: 1, windowId: 1, url: 'https://x.com/home' })),
       onRemoved: { addListener: vi.fn() },
-      onUpdated: { addListener: vi.fn() },
+      onCreated: { addListener: vi.fn() },
+    onUpdated: { addListener: vi.fn() },
     };
     vi.stubGlobal('chrome', { tabs, debugger: debuggerApi, scripting: {}, runtime: { id: 'opencli-test' } });
 

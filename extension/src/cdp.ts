@@ -115,8 +115,9 @@ function isDebuggableUrl(url?: string): boolean {
 
 export async function ensureAttached(tabId: number, aggressiveRetry: boolean = false): Promise<void> {
   // Verify the tab URL is debuggable before attempting attach
+  let tab: chrome.tabs.Tab;
   try {
-    const tab = await chrome.tabs.get(tabId);
+    tab = await chrome.tabs.get(tabId);
     if (!isDebuggableUrl(tab.url)) {
       // Invalidate cache if previously attached
       attached.delete(tabId);
@@ -127,6 +128,18 @@ export async function ensureAttached(tabId: number, aggressiveRetry: boolean = f
     if (e instanceof Error && e.message.startsWith('Cannot debug tab')) throw e;
     attached.delete(tabId);
     throw new Error(`Tab ${tabId} no longer exists`);
+  }
+
+  if (tab.autoDiscardable === true) await chrome.tabs.update(tabId, { autoDiscardable: false });
+  if (tab.discarded || tab.status === 'unloaded') {
+    attached.delete(tabId);
+    await chrome.tabs.reload(tabId);
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const current = await chrome.tabs.get(tabId);
+      if (!current.discarded && current.status !== 'unloaded') break;
+      if (attempt === 49) throw new Error(`Tab ${tabId} remained unloaded after reload`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
   }
 
   if (attached.has(tabId)) {
@@ -834,7 +847,14 @@ export async function detach(tabId: number): Promise<void> {
   try { await chrome.debugger.detach({ tabId }); } catch { /* ignore */ }
 }
 
+function preventTabDiscard(tab: chrome.tabs.Tab): void {
+  if (tab.id !== undefined && tab.autoDiscardable !== false) {
+    chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
+  }
+}
+
 export function registerListeners(): void {
+  chrome.tabs.onCreated.addListener(preventTabDiscard);
   chrome.tabs.onRemoved.addListener((tabId) => {
     attached.delete(tabId);
     networkCaptures.delete(tabId);
@@ -852,7 +872,8 @@ export function registerListeners(): void {
     if (source.targetId) clearFrameTarget(source.targetId);
   });
   // Invalidate attached cache when tab URL changes to non-debuggable
-  chrome.tabs.onUpdated.addListener(async (tabId, info) => {
+  chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
+    if (tab) preventTabDiscard(tab);
     if (info.url && !isDebuggableUrl(info.url)) {
       await detach(tabId);
     }
