@@ -127,7 +127,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
   });
 
   function assertRunning() {
-    if (isPaused() && !pausedRead) throw stopped(`${store}自动请求已暂停；请手动拖滑块，下一轮正常读取后自动恢复。`);
+    if (isPaused() && !pausedRead) throw stopped(`${store}自动请求已暂停；请手动拖滑块，完成后告诉 Lead 恢复。`);
   }
   function pause(record: Record<string, unknown>) {
     fs.writeFileSync(pauseFile, JSON.stringify({ ...record, scope, entry: context.entry, access: context.access }) + '\n', { mode: 0o600 });
@@ -147,7 +147,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
   }
   async function recover(hint?: Probe | null): Promise<boolean> {
     if (process.env.OPENCLI_VERIFICATION_FAIL_FAST === '1') throw stopped('验收读取出现验证，立即停止，未自动验证或重试。');
-    if (pausedRead) throw stopped(`${store}仍需手动验证，自动请求已暂停，等待下轮读取。`);
+    if (pausedRead) throw stopped(`${store}自动请求已暂停；请手动拖滑块，完成后告诉 Lead 恢复。`);
     assertRunning();
     if (pending) return pending;
     pending = (async () => {
@@ -161,7 +161,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         pause({ reason: 'challenge_already_attempted', challenge });
-        throw stopped(`${store}这个挑战已尝试过一次；请手动拖滑块，下一轮正常读取后自动恢复。`);
+        throw stopped(`${store}这个挑战已尝试过一次；请手动拖滑块，完成后告诉 Lead 恢复。`);
       }
       const record: Attempt = { id: randomUUID(), time: new Date().toISOString(), device: os.hostname(),
         store, profile: context.profile, profile_alias: alias, entry: context.entry, scope,
@@ -206,7 +206,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
         }
       try { record.notification_sent = await notify(record); }
       catch (error) { record.notification_sent = false; record.notification_error = textOf(error); }
-      if (!record.passed) throw stopped(`${store} Slidex未通过，已暂停该店自动请求，请手动拖滑块，下一轮正常读取后自动恢复。`);
+      if (!record.passed) throw stopped(`${store} Slidex未通过，已暂停该店自动请求，请手动拖滑块，完成后告诉 Lead 恢复。`);
       return true;
     })();
     try { return await pending; } finally { pending = null; }
@@ -378,7 +378,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
           if (!(await probe())?.visible) throw verificationWithoutUi(result);
           if (!attempts.length) await recover();
           pause(attempts.at(-1)!);
-          throw stopped('业务读取仍要求验证，已暂停该店自动请求，请手动拖滑块，下一轮正常读取后自动恢复。');
+          throw stopped('业务读取仍要求验证，已暂停该店自动请求，请手动拖滑块，完成后告诉 Lead 恢复。');
         }
         success = !/"(?:status|状态)"\s*:\s*"(?:error|failed|manual_verification|readback_failed[^"\s]*)"/i.test(textOf(result));
         return result;

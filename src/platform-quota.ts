@@ -76,7 +76,9 @@ export async function preparePlatformAccess(
   if (cached && !resuming) return { channel, cached, markVerification: () => {}, finish: async (_value?: unknown, _error?: unknown) => {} };
   let verificationSeen = false;
   const grant = resuming ? {} : inherited ?? await helper('acquire', { store_key: store, platform: 'taobao',
-    priority: ['order', 'stock_reduce'].includes(purpose) ? 'high' : 'low', purpose });
+    priority: ['order', 'stock_reduce'].includes(purpose) ? 'high' : 'low', purpose,
+    task: process.env.PLATFORM_QUOTA_TASK ?? `opencli:${command.site}/${command.name}`,
+    endpoint: `${command.site}/${command.name}` });
   return { channel, cached: undefined, markVerification: () => { verificationSeen = true; }, finish: async (value?: unknown, error?: unknown) => {
     const reported = error ?? (value && typeof value === 'object' && 'error' in value ? value : '');
     const text = reported instanceof Error ? `${reported.name} ${reported.message}` : JSON.stringify(reported) ?? '';
