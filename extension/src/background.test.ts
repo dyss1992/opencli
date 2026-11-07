@@ -1637,6 +1637,17 @@ describe('background tab isolation', () => {
     expect(chrome.tabs.update).not.toHaveBeenCalled();
   });
 
+  it('routes native runtime.reload without a page write and blocks commands until ACK/reconnect', async () => {
+    const {chrome} = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    const result = await mod.__test__.handleCommand({id:'reload', action:'chrome-call', chromeMethod:'runtime.reload'});
+    expect(result).toMatchObject({ok:true,data:{reloading:true}});
+    expect(chrome.runtime.reload).not.toHaveBeenCalled();
+    expect(await mod.__test__.handleCommand({id:'next',action:'tabs',op:'list'})).toMatchObject({ok:false,errorCode:'extension_reload_busy'});
+    expect(chrome.tabs.create).not.toHaveBeenCalled();expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+
   it('retains a failed slider tab when adapter cleanup and lease release run', async () => {
     const { chrome } = createChromeMock();
     vi.stubGlobal('chrome', chrome);

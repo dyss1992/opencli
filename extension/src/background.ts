@@ -1,3 +1,4 @@
+import { createExtensionReloader } from './extension-reload';
 /**
  * OpenCLI — Service Worker (background script).
  *
@@ -111,6 +112,13 @@ const passiveAutofill = createPassiveAutofill({
   getContextId: getCurrentContextId,
   isSocketOpen: () => ws?.readyState === WebSocket.OPEN,
   send: (payload) => safeSend(ws, payload),
+});
+
+const selfReloader = createExtensionReloader({
+  ready: () => workerReady,
+  isIdle: () => [...activeCommandCounts.values()].every(count => count === 0) && !profileRebinder.isPending(),
+  reload: () => chrome.runtime.reload(),
+  schedule: (callback, delayMs) => setTimeout(callback, delayMs),
 });
 
 const profileRebinder = createProfileRebinder({
@@ -231,6 +239,7 @@ async function connectAttempt(): Promise<void> {
       const target = ws && ws.readyState === WebSocket.OPEN ? ws : thisWs;
       const sent = safeSend(target, result);
       if (command.action === 'profile-rebind') profileRebinder.acknowledge(result, sent);
+      selfReloader.acknowledge(result, sent);
     } catch {
       console.error('[opencli] Message handling error');
     }
@@ -1408,6 +1417,8 @@ async function fetchDaemonVersion(): Promise<string | null> {
 // ─── Command dispatcher ─────────────────────────────────────────────
 
 async function handleCommand(cmd: Command): Promise<Result> {
+  if (cmd.action === 'chrome-call' && cmd.chromeMethod === 'runtime.reload') return selfReloader.prepare(cmd);
+  if (selfReloader.isPending()) return {id: cmd.id, ok: false, errorCode: 'extension_reload_busy', error: 'Extension reload is pending; wait for reconnection.'};
   if (cmd.action === 'profile-rebind') return profileRebinder.prepare(cmd);
   if (profileRebinder.isPending()) return { id: cmd.id, ok: false, errorCode: 'profile_rebind_busy', error: 'Profile rebinding is pending. Wait for reconnection.' };
   if (cmd.action === 'tabs' && cmd.op === 'snapshot') {

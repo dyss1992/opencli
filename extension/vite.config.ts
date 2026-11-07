@@ -13,7 +13,7 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
-      input: {'autofill-content': resolve(__dirname, 'src/autofill-content.ts'), 'background-inventory-borrow': resolve(__dirname, 'src/background.ts'), 'taobao-beforeunload-content': resolve(__dirname, 'src/taobao-beforeunload-content.ts')},
+      input: {'autofill-content': resolve(__dirname, 'src/autofill-content.ts'), 'background-self-reload': resolve(__dirname, 'src/background.ts'), 'taobao-beforeunload-content': resolve(__dirname, 'src/taobao-beforeunload-content.ts')},
       output: {
         entryFileNames: '[name].js',
         format: 'es',
