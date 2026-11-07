@@ -38,6 +38,8 @@ export interface Command {
   retainIncomplete?: boolean;
   /** Target page identity (targetId). Cross-layer contract with the daemon. */
   page?: string;
+  /** Exact native Chrome ID, only for retaining an already observed challenge tab. */
+  tabId?: number;
   /** JS code to evaluate in page context (exec action) */
   code?: string;
   chromeMethod?: string;
@@ -51,7 +53,7 @@ export interface Command {
   /** URL to navigate to (navigate action) */
   url?: string;
   /** Sub-operation for tabs: list, new, close, select */
-  op?: 'list' | 'new' | 'close' | 'select' | 'snapshot';
+  op?: 'list' | 'new' | 'close' | 'select' | 'snapshot' | 'borrow' | 'retain' | 'close-retained';
   /** Tab index for tabs select/close */
   index?: number;
   /** Cookie domain filter */

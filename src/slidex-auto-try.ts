@@ -293,7 +293,7 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
             const kept = JSON.parse(fs.readFileSync(file,'utf8'));
             if (kept.page === otherPage) continue;
             try {
-              const candidate = await sendCommandFull('tabs',{...options,op:'retain',page:kept.page});borrowedRead=true;
+              const candidate = await sendCommandFull('tabs',{...options,op:'borrow',page:kept.page});borrowedRead=true;
               if (candidate.page && candidate.page !== otherPage && matches(String((candidate.data as {url?:string})?.url ?? ''))) {bound=candidate;break;}
               await sendCommandFull('close-window', options);borrowedRead=false;
             } catch(error) {if (!/stale page identity|Page not found|bound_tab_gone|tab_gone/.test(textOf(error))) throw error;}
@@ -302,19 +302,19 @@ export function createSlidexGuard(raw: IPage, context: Context, deps: Dependenci
             const current = await sendCommandFull('chrome-call',{...options,chromeMethod:'tabs.query',chromeArgs:[{}]});
             const candidates = [];
             for (const tab of (current.data as Array<{id:number;url?:string}>).filter(t=>matches(t.url ?? ''))) {
-              const candidate = await sendCommandFull('tabs',{...options,op:'retain',tabId:tab.id});borrowedRead=true;
+              const candidate = await sendCommandFull('tabs',{...options,op:'borrow',tabId:tab.id});borrowedRead=true;
               if (candidate.page !== otherPage) {candidates.push(candidate);break;}
               else {await sendCommandFull('close-window', options);borrowedRead=false;}
             }
             bound = candidates[0];
             if (bound?.page) {
-              bound = await sendCommandFull('tabs',{...options,op:'retain',page:bound.page});borrowedRead=true;
+              bound = await sendCommandFull('tabs',{...options,op:'borrow',page:bound.page});borrowedRead=true;
               if (!matches(String((bound.data as {url?:string})?.url ?? ''))) throw stopped('入口标签已改变，未导航或新建。');
             } else {
               const created = await sendCommandFull('tabs',{...options,op:'new',url: order ? 'https://qn.taobao.com/home.htm/qn-order/unshipped' : 'https://qn.taobao.com/home.htm/SellManage/all'});
               if (!created.page) throw stopped('入口新页未返回ID。');
               if (productRead) {bound=created;createdProductPage=true;}
-              else {bound = await sendCommandFull('tabs',{...options,op:'retain',page:created.page});borrowedRead=true;}
+              else {bound = await sendCommandFull('tabs',{...options,op:'borrow',page:created.page});borrowedRead=true;}
             }
           }
           if (!bound.page || !raw.setActivePage) throw stopped('本入口页面绑定失败。');

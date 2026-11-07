@@ -1975,7 +1975,7 @@ async function handleNavigate(cmd: Command, leaseKey: string): Promise<Result> {
 
 async function handleTabs(cmd: Command, leaseKey: string): Promise<Result> {
   const session = automationSessions.get(leaseKey);
-  if (session && !session.owned && cmd.op !== 'list') {
+  if (session && !session.owned && !['list', 'retain', 'borrow', 'close-retained'].includes(cmd.op ?? '')) {
     return {
       id: cmd.id,
       ok: false,
@@ -1985,6 +1985,55 @@ async function handleTabs(cmd: Command, leaseKey: string): Promise<Result> {
     };
   }
   switch (cmd.op) {
+    case 'borrow':
+    case 'retain': {
+      return withLeaseMutation(async () => {
+        const tabId = cmd.page ? await resolveCommandTabId(cmd)
+          : Number.isInteger(cmd.tabId) && cmd.tabId! > 0 ? cmd.tabId : undefined;
+        if (tabId === undefined) throw new CommandFailure('missing_page', 'Retaining a challenge requires its exact page ID.');
+        const tab = await chrome.tabs.get(tabId);
+        const current = automationSessions.get(leaseKey);
+        if (cmd.op === 'retain' && current?.owned &&
+            !(current.ownedTabIds ?? [current.preferredTabId]).includes(tabId)) {
+          throw new CommandFailure('tab_not_owned', 'The challenge tab does not belong to this session.');
+        }
+        if (cmd.op === 'borrow') {
+          if (!isDebuggableUrl(tab.url)) throw new CommandFailure('bound_tab_not_debuggable', 'The requested page is not debuggable.');
+          // A cached ordinary page is not a challenge owned by the new lease.
+          if ([...automationSessions.entries()].some(([key, lease]) => key !== leaseKey &&
+              (lease.ownedTabIds ?? [lease.preferredTabId]).includes(tabId))) {
+            throw new CommandFailure('session_busy', 'The requested page is in use by another session.');
+          }
+          if (current && !(current.ownedTabIds ?? [current.preferredTabId]).includes(tabId)) {
+            await releaseLease(leaseKey, 'borrow ordinary page');
+          }
+        }
+        if (current?.owned && (current.ownedTabIds ?? [current.preferredTabId]).includes(tabId)) {
+          const remaining = (current.ownedTabIds ?? [tabId]).filter(id => id !== tabId);
+          setLeaseSession(leaseKey, { ...current, owned: remaining.length > 0,
+            preferredTabId: remaining[0] ?? tabId, ownedTabIds: remaining });
+          await releaseLease(leaseKey, 'challenge retained');
+        }
+        // Borrowing lets the recorder read this same ordinary tab without creating one.
+        setLeaseSession(leaseKey, { session: getSessionFromKey(leaseKey), surface: getSurfaceFromKey(leaseKey),
+          kind: 'bound', owned: false, windowId: tab.windowId, preferredTabId: tabId, ownedTabIds: [tabId] });
+        resetWindowIdleTimer(leaseKey);
+        return pageScopedResult(cmd.id, tabId, { retained: true, title: tab.title, url: tab.url });
+      });
+    }
+    case 'close-retained': {
+      return withLeaseMutation(async () => {
+        let tabId: number | undefined;
+        try { tabId = await resolveCommandTabId(cmd); } catch { return { id: cmd.id, ok: true, data: { missing: true } }; }
+        if (tabId === undefined) throw new CommandFailure('missing_page', 'Closing a retained challenge requires its exact page ID.');
+        if ([...automationSessions.values()].some(s => s.owned && (s.ownedTabIds ?? [s.preferredTabId]).includes(tabId!))) {
+          throw new CommandFailure('session_busy', 'The retained tab is now in use.');
+        }
+        await removeTabWithDialogProtection(tabId);
+        identity.evictTab(tabId);
+        return { id: cmd.id, ok: true, data: { closed: cmd.page } };
+      });
+    }
     case 'list': {
       const tabs = await listAutomationWebTabs(leaseKey);
       const data = await Promise.all(tabs.map(async (t, i) => {

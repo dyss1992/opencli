@@ -161,6 +161,7 @@ function createChromeMock() {
         }
         removeEmptyGroups();
       }),
+      onCreated: { addListener: vi.fn() },
       onUpdated: { addListener: vi.fn(), removeListener: vi.fn() } as Listener<(id: number, info: chrome.tabs.TabChangeInfo) => void>,
       onRemoved: { addListener: vi.fn() } as Listener<(tabId: number) => void>,
     },
@@ -1602,6 +1603,66 @@ describe('background tab isolation', () => {
     });
     expect(retry).toMatchObject({ ok: true, data: { tabCleanup: 'closed-owned-tab' } });
     expect(mod.__test__.getSession(browserKey('retry'))).toBeNull();
+  });
+
+  it('replays all 94 inventory failures with a new owned lease and an ordinary cached page', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    const records = (await import('./inventory-failure-records.js')).default;
+    expect(records).toHaveLength(94);
+    for (const [index, row] of records.entries()) {
+      const session = row.store + '-' + index;
+      const options = {session, surface: 'adapter' as const, tabPlacement: 'existing-window' as const, windowMode: 'background' as const};
+      await mod.__test__.handleCommand({ id: 'new', action: 'tabs', op: 'new', ...options, url: 'https://qn.taobao.com/home.htm/SellManage/all' });
+      const rejected = await mod.__test__.handleCommand({id: 'retain', action: 'tabs', op: 'retain', ...options, tabId: 1});
+      expect(rejected).toMatchObject({ok: false, errorCode: 'tab_not_owned'});
+      const borrowed = await mod.__test__.handleCommand({id: 'borrow', action: 'tabs', op: 'borrow', ...options, tabId: 1});
+      expect(borrowed).toMatchObject({ok: true});
+      expect(mod.__test__.getSession(adapterKey(session))).toMatchObject({owned: false, preferredTabId: 1});
+      await mod.__test__.handleCommand({id: 'detach', action: 'close-window', ...options});
+    }
+    expect(chrome.tabs.remove).not.toHaveBeenCalledWith(1);
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('does not borrow a page held by another owned=%s session', async owned => {
+    const {chrome} = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    mod.__test__.setSession(adapterKey('writer'), {windowId: 1, owned, preferredTabId: 1});
+    const result = await mod.__test__.handleCommand({id: 'borrow', action: 'tabs', op: 'borrow', session: 'inventory', surface: 'adapter', tabId: 1});
+    expect(result).toMatchObject({ok: false, errorCode: 'session_busy'});
+    expect(chrome.tabs.remove).not.toHaveBeenCalled();
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+
+  it('retains a failed slider tab when adapter cleanup and lease release run', async () => {
+    const { chrome } = createChromeMock();
+    vi.stubGlobal('chrome', chrome);
+    const mod = await import('./background');
+    const key = adapterKey('failed-slider');
+    await mod.__test__.handleCommand({ id: 'new-slider', action: 'tabs', op: 'new',
+      session: 'failed-slider', surface: 'adapter', tabPlacement: 'existing-window', windowMode: 'background',
+      url: 'https://qn.taobao.com/challenge?secret=removed' });
+    const tabId = mod.__test__.getSession(key)!.preferredTabId!;
+    const page = (await mod.__test__.handleCommand({ id: 'get-slider', action: 'tabs', op: 'list',
+      session: 'failed-slider', surface: 'adapter' })).data as { page?: string }[];
+    const target = page.find(p => p.page)?.page ?? 'target-' + tabId;
+    const retained = await mod.__test__.handleCommand({ id: 'retain-slider', action: 'tabs', op: 'retain',
+      session: 'failed-slider', surface: 'adapter', page: target });
+    expect(retained).toMatchObject({ ok: true, data: { retained: true } });
+    for (const action of ['close-owned-tab', 'close-window'] as const) {
+      await mod.__test__.handleCommand({ id: action, action, session: 'failed-slider', surface: 'adapter' });
+    }
+    expect(chrome.tabs.remove).not.toHaveBeenCalledWith(tabId);
+    expect(chrome.tabs.update).not.toHaveBeenCalledWith(tabId, expect.objectContaining({ active: true }));
+    expect(mod.__test__.getSession(key)).toBeNull();
+    // After Lead clears the pause, exact-ID cleanup uses the ordinary lifecycle again.
+    const closed = await mod.__test__.handleCommand({ id: 'resume-cleanup', action: 'tabs', op: 'close-retained',
+      session: 'failed-slider', surface: 'adapter', page: target });
+    expect(closed).toMatchObject({ ok: true });
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(tabId);
   });
 
   it('closes a one-shot adapter lease without parking its final tab', async () => {
